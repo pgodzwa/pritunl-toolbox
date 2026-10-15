@@ -1,0 +1,22 @@
+# Copy to ~/.config/pritunl-toolbox/config.toml and `chmod 600` it,
+# or let `pritunl-toolbox config init` create it for you.
+
+default_profile = "prod"
+
+[profiles."prod"]
+url = "https://vpn.example.com"
+api_token = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+# Prefer a password manager over storing the secret in this file:
+api_secret_cmd = "pass show pritunl/prod-api-secret"
+# api_secret = "..."
+verify_tls = true
+# ca_bundle = "/etc/ssl/certs/internal-ca.pem"
+timeout = 15
+workers = 4          # parallel API requests (1-16)
+read_only = true     # blocks enable/disable and any future write commands
+
+[profiles."staging"]
+url = "https://vpn-staging.example.com"
+api_token = "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+api_secret_cmd = "op read op://ops/pritunl-staging/secret"
+read_only = false
