@@ -1,15 +1,20 @@
 # pritunl-toolbox
 
-A command-line toolbox for [Pritunl](https://pritunl.com) VPN admins. It answers the questions
-the web console makes awkward:
+A command-line toolbox and interactive terminal UI for [Pritunl](https://pritunl.com) VPN admins.
+It answers the questions the web console makes awkward:
 
 - **Who is connected right now**, to which server, from where, on what device?
 - **Who owns this IP?** Works for a VPN IP (assigned or live) and for a real/public IP, single
   addresses or whole CIDR ranges.
 - **Search across every organization** by name, email, group, server, VPN IP, real IP, platform,
   status, inactivity and more, with negation, globs and regexes.
+- **Where are they connecting from?** Offline GeoIP/ASN enrichment (country, city, provider),
+  `country:`/`asn:` search, **impossible-travel** detection and allowed-country checks. No IP
+  is ever sent to a third party.
 - **Security & hygiene report**: disabled users still connected, accounts used from several IPs at
   once, duplicate VPN IPs, users bypassing 2FA, stale accounts, servers without 2FA.
+- **Terminal UI** (`ptb tui`): dashboard, live sessions with filter, search, whois, servers,
+  report. Select a row for details, audit log, server logs and enable/disable.
 
 ```text
 $ ptb online --server prod
@@ -23,12 +28,19 @@ $ ptb online --server prod
 
 ## Install
 
-Requires Python 3.9+.
+Requires Python 3.10+.
 
 ```bash
 pipx install git+https://github.com/pgodzwa/pritunl-toolbox
-# or, for development
-python -m venv .venv && . .venv/bin/activate && pip install -e '.[dev]'
+```
+
+For a reproducible, tamper-evident install, use the hash-pinned lock file. pip refuses any
+package whose hash doesn't match:
+
+```bash
+python -m venv .venv && . .venv/bin/activate
+pip install --require-hashes -r requirements.txt
+pip install --no-deps .
 ```
 
 This installs two equivalent commands: `pritunl-toolbox` and the short alias `ptb`.
@@ -74,9 +86,73 @@ Instead of storing the secret in the file you can set `api_secret_cmd`, e.g.
 | `user disable/enable USER` | Writes (confirmation required, blocked on `read_only` profiles) |
 | `server show NAME` | Server details, orgs, routes, hosts and connected users |
 | `server logs NAME -n 100` | Server process output |
-| `report [--inactive-days 90]` | Health and security findings. Exit code 3 if any are high severity |
+| `report [--inactive-days 90] [--allowed-countries PL,DE]` | Health and security findings, including impossible travel when GeoIP is available. Exit code 3 if any are high severity |
+| `travel [QUERY] [--audit --days 30]` | Impossible-travel detection from live sessions and, with `--audit`, from Pritunl's audit history |
+| `geo status` / `geo lookup IP...` | Which GeoIP databases are in use, and their age / local lookups |
+| `tui [--refresh 30]` | Interactive terminal UI |
 
 Every listing supports `-o table|json|csv`.
+
+## Terminal UI
+
+```bash
+ptb tui
+```
+
+| Tab | What you get |
+| --- | --- |
+| **1 Dashboard** | Cards for users online, sessions, servers online, disabled-but-connected and findings; sessions per server; sessions per country (or platform) |
+| **2 Online** | Live sessions. Filter while you type using the query language (`group:dev country:PL`) and narrow by server with the dropdown |
+| **3 Search** | Any query (`john`, `10.8.0.15`, `inactive:90d`). The *per server* switch gives one row per server entry |
+| **4 Whois** | Paste IPs or CIDRs to see who owns or uses them |
+| **5 Servers** | Server list. Select one for connected users and server logs |
+| **6 Report** | Findings by severity, with an allowed-countries input |
+
+Press **Enter** on any user row for a detail view with servers, live sessions, location and a
+*Load audit log* button. On read-write profiles it also has an *Enable/Disable user* button that
+asks for confirmation.
+
+Keys: `1`–`6` tabs · `/` focus filter · `r` refresh · `a` toggle auto-refresh · `x` export the
+current table to CSV · `Esc` close dialog · `q` quit · `Ctrl+P` command palette.
+Exports go to `~/pritunl-toolbox-exports/` (directory `700`, files `600`).
+
+## GeoIP, location search and impossible travel
+
+Geo features use local MaxMind-format databases, so **lookups never leave your machine**:
+
+- **MaxMind GeoLite2** (free account): install `geoipupdate` with
+  `EditionIDs GeoLite2-City GeoLite2-ASN` and run it weekly.
+- **DB-IP lite** (no account, CC BY 4.0): put `dbip-city-lite-*.mmdb` and `dbip-asn-lite-*.mmdb`
+  into `~/.local/share/GeoIP/`.
+- **IPinfo lite** (`ipinfo_lite.mmdb`, country plus ASN, no city coordinates).
+
+Databases in `~/.local/share/GeoIP`, `/usr/share/GeoIP` and `/var/lib/GeoIP` are found
+automatically. You can also set paths in `[geoip]` (see `config.example.toml`) or with
+`PRITUNL_GEOIP_CITY` / `PRITUNL_GEOIP_ASN`. Use `--no-geo` to switch enrichment off and `--geo`
+to make it mandatory. `ptb geo status` shows what is in use and warns when the data is stale.
+
+With a database present, `online`, `search -x`, `whois`, `user show` and the TUI gain
+**Location** and **ASN** columns. Three query keys become available:
+
+```text
+ptb online country:DE,NL                 # sessions from Germany or the Netherlands
+ptb search --online -country:PL          # online users with no session from Poland
+ptb online 'asn:~hetzner|ovh|digitalocean'  # connections from hosting providers
+ptb report --allowed-countries PL,DE     # flag sessions from anywhere else
+```
+
+**Impossible travel.** Each user's observed locations are put in time order. When two
+consecutive locations would need a speed above `--max-speed` (default 900 km/h), a finding is
+raised. Each location's accuracy radius is subtracted from the distance first, and moves shorter
+than `--min-distance` (default 500 km) are ignored, which keeps false positives from imprecise
+lookups and mobile carriers down.
+
+- Live sessions alone catch one account connected from far-apart places **at the same time**.
+- `ptb travel --audit --days 30` adds the remote addresses from Pritunl's per-user audit log.
+  This needs auditing enabled in Pritunl and costs one API call per recently active user
+  (capped by `--max-users`).
+
+`travel` exits with code 3 when it finds something, so it can drive cron alerts.
 
 ## Query language
 
@@ -103,6 +179,7 @@ ptb online rip:198.51.100.0/24 -group:contractors
 | `connected:yes\|no` | entry is live | server entry |
 | `inactive:90d` / `active:24h` | last activity older / newer than (s, m, h, d, w) | user |
 | `bypass2fa:yes` `pin:yes` `disabled:yes` | flags | user |
+| `country:` `city:` `asn:` | ISO code or country name / city / AS number or `~provider` (GeoIP) | server entry |
 
 Value forms: `foo` substring, `=foo` exact, `fo*` glob, `~regex`, `a,b` any of. Prefix a term with
 `-` to negate it. Aliases are accepted too: `vpn_ip`, `real_ip`, `src`, `os`, `user` and others.
@@ -131,23 +208,35 @@ not "has prod access and has 10.8.0.5 on some server". A negated entry term mean
   from VPN clients. Control characters and ANSI escapes are stripped, rich markup is not
   interpreted, and CSV cells that start with `= + - @` are prefixed with `'` to stop
   spreadsheet formula injection.
-- Exports hold personal data (names, emails, IPs). Store and share them accordingly.
+- **No markup injection in the TUI.** Every TUI cell and label is a pre-sanitised `Text`
+  object, because Textual's DataTable would otherwise parse strings as markup.
+- **GeoIP stays local.** Lookups use local databases only; no IPs go to online services.
+- **Pinned supply chain.** Lock files carry a sha256 hash for every transitive dependency.
+  CI installs with `--require-hashes`, runs `pip-audit` on every push and weekly, and runs with
+  a read-only token. Dependabot proposes updates after a 5-day cooldown.
+- Exports hold personal data (names, emails, IPs, locations). Store and share them accordingly.
+
+See [SECURITY.md](SECURITY.md) for the threat model and how to report a vulnerability.
 
 ## Development
 
 ```bash
-pip install -e '.[dev]'
-pytest           # tests run against a fake Pritunl API that verifies HMAC signatures
+pip install --require-hashes -r requirements-dev.txt && pip install --no-deps -e .
+pytest           # fake Pritunl API that verifies HMAC signatures + headless TUI tests
 ruff check .
+pip-audit -r requirements.txt -r requirements-dev.txt --require-hashes --disable-pip
 ```
+
+To update dependencies, bump the floors in `pyproject.toml` and regenerate the lock files with
+the command at the top of each `requirements*.txt` (Dependabot does this weekly).
 
 ## Roadmap ideas
 
 - `user disconnect`, `user reset-otp`, and `user key-link` (temporary profile links) with
   audit-friendly confirmations
 - Session history: persist `online --watch` events to SQLite and answer "who had 10.8.0.15 last
-  Tuesday at 14:00?"
-- GeoIP/ASN enrichment for real IPs, plus "impossible travel" detection
+  Tuesday at 14:00?" This would also give impossible-travel detection history without audit logs.
+- Flag connections from known VPN/proxy/Tor exit ranges and hosting ASNs using local lists
 - Bulk operations from CSV: create users, set groups, disable leavers (HR offboarding sync)
 - Prometheus exporter (`ptb exporter`) for sessions per server, users online, and findings
 - Optional encrypted local cache for very large installations

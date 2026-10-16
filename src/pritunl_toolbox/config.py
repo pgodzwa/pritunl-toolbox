@@ -204,6 +204,12 @@ def load_profile(
     )
 
 
+def load_geo_settings(path: Path | None = None) -> dict[str, Any]:
+    """The top-level [geoip] table: city / asn database paths and autodiscover flag."""
+    geo = load_file(path or default_config_path()).get("geoip", {})
+    return dict(geo) if isinstance(geo, dict) else {}
+
+
 # --------------------------------------------------------------------------- writing
 
 
@@ -221,10 +227,16 @@ def dump_toml(data: dict[str, Any]) -> str:
     for key, val in data.items():
         if not isinstance(val, dict):
             lines.append(f"{key} = {_toml_value(val)}")
-    for key, profiles in data.items():
-        if not isinstance(profiles, dict):
+    for key, table in data.items():
+        if not isinstance(table, dict):
             continue
-        for pname, pdata in profiles.items():
+        if not any(isinstance(v, dict) for v in table.values()):
+            # flat table such as [geoip]
+            lines.append("")
+            lines.append(f"[{key}]")
+            lines.extend(f"{k} = {_toml_value(v)}" for k, v in table.items() if v is not None)
+            continue
+        for pname, pdata in table.items():
             lines.append("")
             lines.append(f"[{key}.{json.dumps(pname)}]")
             for k, v in pdata.items():
@@ -244,7 +256,10 @@ def save_profile(name: str, values: dict[str, Any], path: Path | None = None,
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     # Create with 0600 from the start so the secret is never world-readable, even briefly.
     tmp = path.with_suffix(".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    if tmp.is_symlink() or tmp.exists():
+        tmp.unlink()  # stale temp file or planted symlink: never write through it
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(tmp, flags, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(dump_toml(data))
     os.replace(tmp, path)

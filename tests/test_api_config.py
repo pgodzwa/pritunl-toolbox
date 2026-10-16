@@ -114,3 +114,13 @@ def test_sanitize_and_csv_safe():
     assert csv_safe("=1+1") == "'=1+1"
     assert csv_safe("-cmd") == "'-cmd"
     assert csv_safe("normal") == "normal"
+
+
+def test_save_profile_does_not_follow_planted_symlink(tmp_path):
+    path = tmp_path / "config.toml"
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep me")
+    (tmp_path / "config.tmp").symlink_to(victim)
+    save_profile("p", {"url": "https://x", "api_token": "t", "api_secret": "s"}, path=path)
+    assert victim.read_text() == "keep me"
+    assert load_file(path)["profiles"]["p"]["api_secret"] == "s"

@@ -24,16 +24,19 @@ from pritunl_toolbox.analysis import (
     session_row,
     user_json,
     user_row,
+    with_geo,
 )
 from pritunl_toolbox.api import PritunlAPIError, PritunlClient
 from pritunl_toolbox.config import (
     ConfigError,
-    Profile,
     default_config_path,
+    load_geo_settings,
     load_profile,
     save_profile,
 )
-from pritunl_toolbox.inventory import Inventory, load_inventory
+from pritunl_toolbox.context import Ctx
+from pritunl_toolbox.geo import GeoError, GeoResolver, resolve_paths
+from pritunl_toolbox.inventory import Inventory
 from pritunl_toolbox.models import Host, Organization, Server, User
 from pritunl_toolbox.output import (
     FORMATS,
@@ -50,33 +53,15 @@ from pritunl_toolbox.output import (
     warn,
 )
 from pritunl_toolbox.query import Query, QueryError
+from pritunl_toolbox.travel import (
+    DEFAULT_MAX_SPEED_KMH,
+    DEFAULT_MIN_DISTANCE_KM,
+    audit_observations,
+    detect,
+    session_observations,
+)
 
 # ----------------------------------------------------------------------------- plumbing
-
-
-class Ctx:
-    def __init__(self, profile_name: str | None, overrides: dict[str, Any]):
-        self.profile_name = profile_name
-        self.overrides = overrides
-        self._profile: Profile | None = None
-        self._client: PritunlClient | None = None
-
-    @property
-    def profile(self) -> Profile:
-        if self._profile is None:
-            self._profile = load_profile(self.profile_name, overrides=self.overrides, warn=warn)
-            if not self._profile.verify_tls:
-                warn("TLS certificate verification is DISABLED; traffic can be intercepted")
-        return self._profile
-
-    @property
-    def client(self) -> PritunlClient:
-        if self._client is None:
-            self._client = PritunlClient(self.profile)
-        return self._client
-
-    def inventory(self, **kwargs) -> Inventory:
-        return load_inventory(self.client, **kwargs)
 
 
 pass_ctx = click.make_pass_decorator(Ctx)
@@ -87,7 +72,7 @@ def handle_errors(func):
     def wrapper(*args, **kwargs):
         try:
             return func(*args, **kwargs)
-        except (ConfigError, PritunlAPIError, QueryError) as exc:
+        except (ConfigError, PritunlAPIError, QueryError, GeoError) as exc:
             error(str(exc))
             sys.exit(2)
         except KeyboardInterrupt:
@@ -108,6 +93,7 @@ QUERY terms (all must match; prefix with '-' to negate, e.g. -group:contractors)
   name:  email:  id:  org:  group:  server:  platform:  device:  type:  auth:
   status:online|offline|disabled|enabled   connected:yes|no
   inactive:90d  active:24h  bypass2fa:yes  pin:yes
+  country:PL,DE  city:berlin  asn:13335  asn:~hetzner   (needs a GeoIP database)
 \b
 Values: foo (substring)  =foo (exact)  fo* (glob)  ~regex  a,b (any of)
 """
@@ -165,6 +151,13 @@ class QueryCommand(click.Command):
         return super().parse_args(ctx, head + tail)
 
 
+def require_geo(c: Ctx, query: Query) -> Query:
+    if query.uses_geo and c.geo is None:
+        raise GeoError("country:/city:/asn: terms need a GeoIP database "
+                       "(see 'pritunl-toolbox geo status')")
+    return query
+
+
 def _q(value: str) -> str:
     return '"' + value.replace('"', '\\"') + '"' if any(c.isspace() for c in value) else value
 
@@ -188,8 +181,10 @@ def _sort_sessions(pairs):
               help="Disable TLS verification (dangerous; prefer --ca-bundle).")
 @click.option("--timeout", type=float, help="HTTP timeout in seconds.")
 @click.option("--workers", type=click.IntRange(1, 16), help="Parallel API requests.")
+@click.option("--geo/--no-geo", "geo_mode", default=None,
+              help="Force / disable offline GeoIP enrichment (default: auto-detect database).")
 @click.pass_context
-def cli(ctx, profile_name, url, ca_bundle, insecure, timeout, workers):
+def cli(ctx, profile_name, url, ca_bundle, insecure, timeout, workers, geo_mode):
     """Toolbox for Pritunl VPN: who is connected, who owns an IP, user search and audits.
 
     \b
@@ -198,11 +193,12 @@ def cli(ctx, profile_name, url, ca_bundle, insecure, timeout, workers):
       pritunl-toolbox online
       pritunl-toolbox whois 10.8.0.15
       pritunl-toolbox search group:devops status:online
+      pritunl-toolbox tui                  interactive terminal UI
     """
     overrides = {"url": url, "ca_bundle": ca_bundle, "timeout": timeout, "workers": workers}
     if insecure:
         overrides["verify_tls"] = False
-    ctx.obj = Ctx(profile_name, overrides)
+    ctx.obj = Ctx(profile_name, overrides, geo_mode=geo_mode)
 
 
 # ----------------------------------------------------------------------------- config
@@ -350,7 +346,7 @@ def online(c: Ctx, terms, fmt, summary, watch, **flags):
     Accepts the same QUERY terms as 'search', e.g.: online server:prod group:devops
     """
     flags["online"] = True
-    query = build_query(terms, **flags)
+    query = require_geo(c, build_query(terms, **flags))
 
     def snapshot():
         inv = c.inventory(with_servers=False)
@@ -374,7 +370,8 @@ def online(c: Ctx, terms, fmt, summary, watch, **flags):
         render_json([session_json(u, e) for u, e in pairs])
     else:
         now = time.time()
-        emit([session_row(u, e, now) for u, e in pairs], SESSION_COLUMNS, fmt,
+        emit([session_row(u, e, now) for u, e in pairs],
+             with_geo(SESSION_COLUMNS, c.geo is not None), fmt,
              title=f"Online sessions: {len(pairs)} ({len({u.id for u, _ in pairs})} users)")
     if not watch:
         return
@@ -406,8 +403,9 @@ def _print_event(kind: str, u: User, e, fmt: str) -> None:
     style = "green" if kind == "connect" else "red"
     line = Text(time.strftime("%H:%M:%S "), style="dim")
     line += Text(f"{kind.upper():<10}", style=style)
+    where = f" [{e.geo.label}, {e.geo.asn_label}]" if e.geo else ""
     line += Text(sanitize(f" {u.org_name}/{u.name} -> {e.server_name} vpn={e.virt_address} "
-                          f"real={e.real_address} device={e.device_name or '-'} "
+                          f"real={e.real_address}{where} device={e.device_name or '-'} "
                           f"({e.platform or '-'})"))
     console.print(line)
 
@@ -431,8 +429,9 @@ def search(c: Ctx, terms, fmt, expand, limit, **flags):
       search group:devops,sre -status:disabled
       search server:prod-* platform:win
       search inactive:90d status:enabled  stale accounts
+      search -country:PL --online         (with GeoIP) sessions from abroad
     """
-    query = build_query(terms, **flags)
+    query = require_geo(c, build_query(terms, **flags))
     inv = c.inventory(with_servers=False)
     matches = query.run(inv.users)
     matches.sort(key=lambda m: (m.user.org_name.lower(), m.user.name.lower()))
@@ -444,9 +443,10 @@ def search(c: Ctx, terms, fmt, expand, limit, **flags):
         render_json([user_json(m.user, m.entries) for m in matches])
     elif expand:
         rows = [session_row(m.user, e, now) for m in matches for e in m.entries]
-        emit(rows, SESSION_COLUMNS, fmt, title=f"{total} users match: {query}")
+        emit(rows, with_geo(SESSION_COLUMNS, c.geo is not None), fmt,
+             title=f"{total} users match: {query}")
     else:
-        emit([user_row(m, now) for m in matches], USER_COLUMNS, fmt,
+        emit([user_row(m, now) for m in matches], with_geo(USER_COLUMNS, c.geo is not None), fmt,
              title=f"{total} users match: {query}")
     if not matches:
         sys.exit(1)
@@ -479,6 +479,7 @@ def whois(c: Ctx, ips, fmt):
     cols = [("query", "Query"), ("match", "Match"), ("org", "Org"), ("user", "User"),
             ("email", "Email"), ("server", "Server"), ("state", "State"), ("vpn_ip", "VPN IP"),
             ("real_ip", "Real IP"), ("uptime", "Connected"), ("device", "Device")]
+    cols = with_geo(cols, c.geo is not None)
     if fmt == "json":
         render_json(data)
     else:
@@ -500,7 +501,7 @@ def whois(c: Ctx, ips, fmt):
 @handle_errors
 def ips(c: Ctx, terms, fmt, hosts_fmt, domain, **flags):
     """Export the user -> VPN IP assignment map (for firewalls, DNS, inventories)."""
-    query = build_query(terms, **flags)
+    query = require_geo(c, build_query(terms, **flags))
     inv = c.inventory(with_servers=False)
     rows = []
     for m in sorted(query.run(inv.users), key=lambda m: (m.user.org_name, m.user.name)):
@@ -585,7 +586,8 @@ def user_show(c: Ctx, ident, org, audit, fmt):
          if u.last_active else "never"),
     ], title="User")
     emit([session_row(u, e, now) for e in u.servers],
-         [c_ for c_ in SESSION_COLUMNS if c_[0] not in ("org", "user", "groups")],
+         with_geo([c_ for c_ in SESSION_COLUMNS if c_[0] not in ("org", "user", "groups")],
+                  c.geo is not None),
          "table", title="Servers")
     if audit:
         emit(audit_rows, [("time", "Time"), ("type", "Type"), ("remote_addr", "Remote"),
@@ -695,7 +697,8 @@ def server_show(c: Ctx, ref, fmt):
              title="Routes")
     now = time.time()
     emit([session_row(u, e, now) for u, e in pairs],
-         [c_ for c_ in SESSION_COLUMNS if c_[0] not in ("server", "state")], fmt,
+         with_geo([c_ for c_ in SESSION_COLUMNS if c_[0] not in ("server", "state")],
+                  c.geo is not None), fmt,
          title="Connected users")
 
 
@@ -715,23 +718,46 @@ def server_logs(c: Ctx, ref, tail):
 # ----------------------------------------------------------------------------- report
 
 
+def _country_set(value: str | None) -> set[str] | None:
+    if not value:
+        return None
+    codes = {v.strip().upper() for v in value.split(",") if v.strip()}
+    bad = [v for v in codes if not re.fullmatch(r"[A-Z]{2}", v)]
+    if bad:
+        raise click.BadParameter(f"expected ISO country codes like PL,DE; got {', '.join(bad)}")
+    return codes
+
+
 @cli.command()
 @output_option
 @click.option("--inactive-days", type=int, default=90, show_default=True,
               help="Flag enabled users inactive for longer than this.")
 @click.option("--min-severity", type=click.Choice(["high", "medium", "low", "info"]),
               default="info", show_default=True)
+@click.option("--allowed-countries", envvar="PRITUNL_ALLOWED_COUNTRIES", metavar="CC,CC",
+              help="Flag sessions from other countries (needs GeoIP), e.g. PL,DE,NL.")
+@click.option("--max-speed", type=float, default=DEFAULT_MAX_SPEED_KMH, show_default=True,
+              help="Impossible-travel speed threshold in km/h (needs GeoIP).")
+@click.option("--min-distance", type=float, default=DEFAULT_MIN_DISTANCE_KM, show_default=True,
+              help="Ignore location changes shorter than this (km).")
 @pass_ctx
 @handle_errors
-def report(c: Ctx, fmt, inactive_days, min_severity):
+def report(c: Ctx, fmt, inactive_days, min_severity, allowed_countries, max_speed,
+           min_distance):
     """Health & security report: sessions per server, groups, and findings.
 
     Findings include disabled users still connected, accounts used from several IPs at once,
-    duplicate VPN IPs, users bypassing 2FA, stale accounts and servers without 2FA.
+    duplicate VPN IPs, users bypassing 2FA, stale accounts and servers without 2FA. With a
+    GeoIP database also impossible travel and sessions from unexpected countries.
     Exit code 3 if any high severity finding exists (useful in cron/CI).
     """
+    allowed = _country_set(allowed_countries)
+    if allowed and c.geo is None:
+        raise GeoError("--allowed-countries needs a GeoIP database (see 'geo status')")
     inv = c.inventory()
-    rep = build_report(inv, inactive_days=inactive_days)
+    events = detect(session_observations(inv.users), max_speed, min_distance) if c.geo else []
+    rep = build_report(inv, inactive_days=inactive_days, allowed_countries=allowed,
+                       travel_events=events)
     limit = SEVERITY_ORDER[min_severity]
     rep["findings"] = [f for f in rep["findings"] if SEVERITY_ORDER[f["severity"]] <= limit]
     if fmt == "json":
@@ -749,11 +775,183 @@ def report(c: Ctx, fmt, inactive_days, min_severity):
                               ("platforms", "Platforms")], "table", title="Servers")
         emit(rep["groups"][:25], [("group", "Group"), ("users", "Users"),
                                   ("online", "Online")], "table", title="Groups (top 25)")
+        if rep["countries"]:
+            emit(rep["countries"], [("country", "Country"), ("sessions", "Sessions")], "table",
+                 title="Sessions by country")
         emit(rep["findings"], [("severity", "Severity"), ("check", "Check"),
                                ("subject", "Subject"), ("detail", "Detail")], "table",
              title=f"Findings ({len(rep['findings'])})")
     if any(f["severity"] == "high" for f in rep["findings"]):
         sys.exit(3)
+
+
+# ----------------------------------------------------------------------------- travel
+
+
+TRAVEL_COLUMNS = [
+    ("user", "User"), ("from_time", "From (time)"), ("from_ip", "From IP"),
+    ("from_loc", "From"), ("to_time", "To (time)"), ("to_ip", "To IP"), ("to_loc", "To"),
+    ("distance", "Distance"), ("elapsed", "Elapsed"), ("speed", "Speed"),
+]
+
+
+def travel_row(ev) -> dict[str, Any]:
+    return {
+        "user": ev.user,
+        "from_time": fmt_ts(ev.start.ts), "from_ip": ev.start.ip,
+        "from_loc": f"{ev.start.geo.label} / {ev.start.geo.asn_label}",
+        "to_time": fmt_ts(ev.end.ts), "to_ip": ev.end.ip,
+        "to_loc": f"{ev.end.geo.label} / {ev.end.geo.asn_label}",
+        "distance": f"{ev.distance_km:,.0f} km",
+        "elapsed": "concurrent" if ev.concurrent else fmt_duration(ev.hours * 3600),
+        "speed": "∞" if ev.concurrent else f"{ev.speed_kmh:,.0f} km/h",
+    }
+
+
+@cli.command(cls=QueryCommand)
+@click.argument("terms", nargs=-1, type=click.UNPROCESSED)
+@output_option
+@click.option("--audit", "use_audit", is_flag=True,
+              help="Also use the Pritunl audit log (needs auditing enabled on the server).")
+@click.option("--days", type=click.IntRange(1, 365), default=7, show_default=True,
+              help="History window for --audit.")
+@click.option("--max-users", type=click.IntRange(1, 5000), default=200, show_default=True,
+              help="Cap on users whose audit log is fetched (one API call each).")
+@click.option("--max-speed", type=float, default=DEFAULT_MAX_SPEED_KMH, show_default=True,
+              help="km/h above which travel is considered impossible.")
+@click.option("--min-distance", type=float, default=DEFAULT_MIN_DISTANCE_KM, show_default=True,
+              help="Ignore location changes shorter than this (km).")
+@pass_ctx
+@handle_errors
+def travel(c: Ctx, terms, fmt, use_audit, days, max_users, max_speed, min_distance):
+    """Detect impossible travel (needs a GeoIP database).
+
+    Compares where each user's sessions come from. Live sessions alone catch the same account
+    being used from far-apart places at once. --audit adds the history recorded in Pritunl's
+    audit log. Optional QUERY terms select users (default: everyone).
+    Exit code 3 if anything is detected.
+
+    \b
+    Examples:
+      travel
+      travel --audit --days 30 group:admins
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    if c.geo is None:
+        raise GeoError("impossible-travel detection needs a GeoIP database (see 'geo status')")
+    query = require_geo(c, Query.parse(terms))
+    inv = c.inventory(with_servers=False)
+    users = [m.user for m in query.run(inv.users)]
+    now = time.time()
+    observations = session_observations(users, now)
+    if use_audit:
+        since = now - days * 86400
+        candidates = sorted((u for u in users if u.last_active and u.last_active >= since),
+                            key=lambda u: -(u.last_active or 0))
+        if len(candidates) > max_users:
+            warn(f"{len(candidates)} users active in the window; checking the {max_users} most "
+                 "recently active (raise --max-users or narrow with query terms)")
+            candidates = candidates[:max_users]
+
+        def fetch(u: User):
+            try:
+                return u, c.client.user_audit(u.org_id, u.id)
+            except PritunlAPIError as exc:
+                warn(f"audit log for {u.org_name}/{u.name} unavailable: {exc}")
+                return u, []
+
+        with ThreadPoolExecutor(max_workers=c.profile.workers) as pool:
+            for u, audit in pool.map(fetch, candidates):
+                observations += audit_observations(u, audit, c.geo, since)
+    events = detect(observations, max_speed, min_distance)
+    if fmt == "json":
+        render_json([e.as_dict() for e in events])
+    else:
+        emit([travel_row(e) for e in events], TRAVEL_COLUMNS, fmt,
+             title=f"Impossible travel: {len(events)} event(s) "
+                   f"(> {max_speed:,.0f} km/h, > {min_distance:,.0f} km)")
+    if events:
+        sys.exit(3)
+
+
+# ----------------------------------------------------------------------------- geo
+
+
+@cli.group()
+def geo():
+    """Offline GeoIP / ASN databases (no IP ever leaves this machine)."""
+
+
+GEO_HELP = """No GeoIP database found. Options (all offline, no API calls per lookup):
+  * MaxMind GeoLite2 (free account): install 'geoipupdate', set EditionIDs to
+    'GeoLite2-City GeoLite2-ASN' and run it weekly (files land in /usr/share/GeoIP).
+  * DB-IP lite (no account): download dbip-city-lite and dbip-asn-lite .mmdb files
+    into ~/.local/share/GeoIP/
+  * Or point the config at the files:
+        [geoip]
+        city = "/path/GeoLite2-City.mmdb"
+        asn  = "/path/GeoLite2-ASN.mmdb"
+"""
+
+
+@geo.command("status")
+@pass_ctx
+@handle_errors
+def geo_status(c: Ctx):
+    """Show which GeoIP databases are used."""
+    city, asn = resolve_paths(load_geo_settings())
+    if not city and not asn:
+        click.echo(GEO_HELP)
+        sys.exit(1)
+    resolver = GeoResolver.open(city, asn)
+    rows = [{**d, "built": fmt_ts(d["build_epoch"]),
+             "age": fmt_ago(d["build_epoch"])} for d in resolver.describe()]
+    emit(rows, [("role", "Role"), ("type", "Type"), ("path", "Path"), ("built", "Built"),
+                ("age", "Age")], "table", title="GeoIP databases")
+    stale = [r for r in resolver.describe() if time.time() - r["build_epoch"] > 45 * 86400]
+    if stale:
+        warn("GeoIP data is older than 45 days; refresh it (e.g. run geoipupdate)")
+
+
+@geo.command("lookup")
+@click.argument("ips", nargs=-1, required=True)
+@output_option
+@pass_ctx
+@handle_errors
+def geo_lookup(c: Ctx, ips, fmt):
+    """Look up IPs in the local GeoIP databases."""
+    if c.geo is None:
+        raise GeoError("no GeoIP database found (see 'geo status')")
+    rows = []
+    for ip in ips:
+        info = c.geo.lookup(ip)
+        if info is None:
+            rows.append({"ip": ip, "location": "not found"})
+            continue
+        rows.append({"ip": ip, "location": info.label, "country": info.country_name,
+                     "asn": info.asn_label, "lat": info.latitude, "lon": info.longitude,
+                     "accuracy_km": info.accuracy_km})
+    emit(rows, [("ip", "IP"), ("location", "Location"), ("country", "Country"),
+                ("asn", "ASN"), ("lat", "Lat"), ("lon", "Lon"), ("accuracy_km", "± km")],
+         fmt, title="GeoIP lookup")
+
+
+# ----------------------------------------------------------------------------- tui
+
+
+@cli.command()
+@click.option("--refresh", type=click.IntRange(10, 3600), default=30, show_default=True,
+              help="Auto-refresh interval in seconds (toggle with 'a' in the UI).")
+@pass_ctx
+@handle_errors
+def tui(c: Ctx, refresh):
+    """Interactive terminal UI: dashboard, live sessions, search, whois, servers, report."""
+    from pritunl_toolbox.tui import run_tui
+
+    _ = c.profile  # fail early on configuration problems, before the screen switches
+    _ = c.geo
+    run_tui(c, refresh_seconds=refresh)
 
 
 def main() -> None:

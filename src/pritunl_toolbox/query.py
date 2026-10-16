@@ -16,10 +16,12 @@ Value forms for text fields:
 
 IP fields accept a single address, a CIDR (10.8.0.0/16), a glob (10.8.*) or a prefix (10.8.).
 
-Server-scoped terms (server, vip, rip, ip, platform, device, status:online, connected) must all be
-satisfied by the *same* server entry of a user, so ``server:prod vip:10.1.0.5`` means "assigned
-10.1.0.5 on prod", not "has prod and has 10.1.0.5 anywhere". Negated server-scoped terms mean
-"no entry of this user matches".
+Geo terms (country:PL,DE  city:berlin  asn:13335 / asn:~cloudflare) need a GeoIP database.
+
+Server-scoped terms (server, vip, rip, ip, platform, device, status:online, connected and the geo
+terms) must all be satisfied by the *same* server entry of a user, so ``server:prod vip:10.1.0.5``
+means "assigned 10.1.0.5 on prod", not "has prod and has 10.1.0.5 anywhere". Negated
+server-scoped terms mean "no entry of this user matches".
 """
 
 from __future__ import annotations
@@ -29,9 +31,8 @@ import ipaddress
 import re
 import shlex
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Callable
 
 from pritunl_toolbox.models import ServerEntry, User, parse_ip
 
@@ -42,7 +43,8 @@ class QueryError(ValueError):
 
 USER_KEYS = {"name", "email", "id", "org", "group", "type", "auth", "text", "inactive",
              "active", "bypass2fa", "pin", "disabled"}
-ENTRY_KEYS = {"server", "vip", "rip", "ip", "platform", "device", "connected"}
+GEO_KEYS = {"country", "city", "asn"}
+ENTRY_KEYS = {"server", "vip", "rip", "ip", "platform", "device", "connected"} | GEO_KEYS
 STATUS_KEY = "status"
 
 ALIASES = {
@@ -57,6 +59,7 @@ ALIASES = {
     "srv": "server",
     "state": "status",
     "bypass_secondary": "bypass2fa", "no2fa": "bypass2fa",
+    "cc": "country", "isp": "asn", "as": "asn",
 }
 
 ALL_KEYS = USER_KEYS | ENTRY_KEYS | {STATUS_KEY}
@@ -230,6 +233,21 @@ def _build_term(key: str, raw: str, negate: bool, now: float) -> Term:
         attr = "platform" if key == "platform" else "device_name"
         m = _any_of(values, lambda v: text_matcher(v, "substring"))
         return entry_term(lambda e: e.connected and m(getattr(e, attr)))
+    if key == "country":
+        m = _any_of(values, lambda v: text_matcher(v, "exact"))
+        return entry_term(lambda e: e.geo is not None
+                          and (m(e.geo.country) or m(e.geo.country_name)))
+    if key == "city":
+        m = _any_of(values, lambda v: text_matcher(v, "substring"))
+        return entry_term(lambda e: e.geo is not None and m(e.geo.city))
+    if key == "asn":
+        def build_asn(v: str):
+            number = v.upper().removeprefix("AS")
+            if number.isdigit():
+                return lambda e, n=int(number): e.geo is not None and e.geo.asn == n
+            tm = text_matcher(v, "substring")
+            return lambda e: e.geo is not None and tm(e.geo.as_org)
+        return entry_term(_any_of(values, build_asn))
     if key in ("vip", "rip", "ip"):
         m = _any_of(values, ip_matcher)
         if key == "vip":
@@ -310,6 +328,10 @@ class Query:
             if m is not None:
                 out.append(m)
         return out
+
+    @property
+    def uses_geo(self) -> bool:
+        return any(t.key in GEO_KEYS for t in self.terms)
 
     def __str__(self) -> str:
         return " ".join(str(t) for t in self.terms) or "(all)"

@@ -27,6 +27,29 @@ SESSION_COLUMNS = [
     ("uptime", "Connected"), ("device", "Device"), ("platform", "Platform"),
 ]
 
+GEO_COLUMNS = [("location", "Location"), ("asn", "ASN")]
+
+
+def with_geo(columns: list[tuple[str, str]], geo: bool, after: str = "real_ip"
+             ) -> list[tuple[str, str]]:
+    """Insert the Location/ASN columns right after ``after`` when geo data is available."""
+    if not geo:
+        return list(columns)
+    out: list[tuple[str, str]] = []
+    for col in columns:
+        out.append(col)
+        if col[0] == after:
+            out.extend(GEO_COLUMNS)
+    return out
+
+
+def geo_label(entry: ServerEntry) -> str:
+    return entry.geo.label if entry.connected and entry.geo else ""
+
+
+def asn_label(entry: ServerEntry) -> str:
+    return entry.geo.asn_label if entry.connected and entry.geo else ""
+
 
 def entry_state(user: User, entry: ServerEntry) -> str:
     if entry.connected:
@@ -49,6 +72,8 @@ def session_row(user: User, entry: ServerEntry, now: float | None = None) -> dic
         if entry.connected and entry.connected_since else "",
         "device": entry.device_name if entry.connected else None,
         "platform": entry.platform if entry.connected else None,
+        "location": geo_label(entry),
+        "asn": asn_label(entry),
     }
 
 
@@ -67,6 +92,8 @@ def user_row(match: Match, now: float | None = None) -> dict[str, Any]:
                    for e in entries],
         "real_ip": [(e.real_address or "?") if e.connected else "-" for e in entries]
         if any_live else [],
+        "location": [geo_label(e) or "-" for e in entries] if any_live else [],
+        "asn": [asn_label(e) or "-" for e in entries] if any_live else [],
         "last_active": fmt_ago(u.last_active, now),
     }
 
@@ -124,11 +151,30 @@ SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2, "info": 3}
 
 
 def build_report(inv: Inventory, inactive_days: int = 90, shared_ip_threshold: int = 5,
-                 now: float | None = None) -> dict[str, Any]:
+                 now: float | None = None, allowed_countries: set[str] | None = None,
+                 travel_events: list | None = None) -> dict[str, Any]:
     now = now or time.time()
     users = inv.users
     sessions = list(iter_sessions(users))
     findings: list[Finding] = []
+
+    # Geo-based checks (only when a GeoIP database enriched the sessions).
+    if allowed_countries:
+        allowed = {c.upper() for c in allowed_countries}
+        for u, e in sessions:
+            if e.geo is None or e.geo.private:
+                continue
+            if (e.geo.country or "??") not in allowed:
+                findings.append(Finding(
+                    "medium", "unexpected-country", f"{u.org_name}/{u.name}",
+                    f"session on {e.server_name} from {e.real_address} "
+                    f"({e.geo.label or 'unknown location'}, {e.geo.asn_label or 'unknown ASN'})"))
+    for ev in travel_events or []:
+        speed = "simultaneously" if ev.concurrent else f"at {ev.speed_kmh:,.0f} km/h"
+        findings.append(Finding(
+            "medium", "impossible-travel", ev.user,
+            f"{ev.start.ip} ({ev.start.geo.label}) -> {ev.end.ip} ({ev.end.geo.label}): "
+            f"{ev.distance_km:,.0f} km {speed}"))
 
     # Disabled users that still hold a live session.
     for u, e in sessions:
@@ -226,6 +272,10 @@ def build_report(inv: Inventory, inactive_days: int = 90, shared_ip_threshold: i
     group_rows = [{"group": g, "users": n, "online": group_online[g]}
                   for g, n in group_total.most_common()]
 
+    countries = Counter((e.geo.country or ("private" if e.geo.private else "unknown"))
+                        for _, e in sessions if e.geo is not None)
+    country_rows = [{"country": c, "sessions": n} for c, n in countries.most_common()]
+
     platforms = Counter((e.platform or "unknown") for _, e in sessions)
     overview = {
         "organizations": len(inv.orgs),
@@ -242,6 +292,7 @@ def build_report(inv: Inventory, inactive_days: int = 90, shared_ip_threshold: i
         "overview": overview,
         "servers": server_rows,
         "groups": group_rows,
+        "countries": country_rows,
         "findings": [asdict(f) for f in findings],
     }
 

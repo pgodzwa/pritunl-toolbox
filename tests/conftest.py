@@ -164,5 +164,41 @@ def fake_api(monkeypatch, tmp_path):
     monkeypatch.setenv("PRITUNL_API_SECRET", SECRET)
     monkeypatch.delenv("PRITUNL_PROFILE", raising=False)
     monkeypatch.delenv("PRITUNL_READ_ONLY", raising=False)
+    monkeypatch.setenv("PRITUNL_GEOIP_AUTODISCOVER", "0")
+    monkeypatch.delenv("PRITUNL_GEOIP_CITY", raising=False)
+    monkeypatch.delenv("PRITUNL_GEOIP_ASN", raising=False)
     with responses.RequestsMock(assert_all_requests_are_fired=False) as rsps:
         yield FakePritunl(rsps)
+
+
+# ----------------------------------------------------------------------------- geo
+
+GEO_TABLE = {
+    "203.0.113.10": dict(country="PL", country_name="Poland", city="Warsaw", latitude=52.23,
+                         longitude=21.01, accuracy_km=20, asn=5617, as_org="Orange Polska"),
+    "192.0.2.50": dict(country="US", country_name="United States", city="New York",
+                       latitude=40.71, longitude=-74.0, accuracy_km=20, asn=64500,
+                       as_org="Example Transit"),
+    "198.51.100.7": dict(country="DE", country_name="Germany", city="Berlin", latitude=52.52,
+                         longitude=13.40, accuracy_km=20, asn=24940, as_org="Hetzner Online"),
+}
+
+
+@pytest.fixture
+def fake_geo(monkeypatch):
+    """A GeoResolver that answers from GEO_TABLE (the fixture IPs are documentation ranges)."""
+    from pritunl_toolbox.geo import GeoResolver
+    from pritunl_toolbox.models import GeoInfo
+
+    class TableResolver(GeoResolver):
+        def _lookup(self, ip):
+            data = GEO_TABLE.get(str(ip))
+            return GeoInfo(**data) if data else None
+
+        def describe(self):
+            return [{"role": "city", "path": "/fake.mmdb", "type": "Fake-City",
+                     "build_epoch": int(NOW), "ip_version": 6}]
+
+    resolver = TableResolver(city_reader=object())
+    monkeypatch.setattr(GeoResolver, "from_settings", classmethod(lambda cls, s=None: resolver))
+    return resolver

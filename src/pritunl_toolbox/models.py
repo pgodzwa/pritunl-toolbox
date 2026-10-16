@@ -10,9 +10,9 @@ from __future__ import annotations
 import ipaddress
 import re
 from dataclasses import asdict, dataclass, field
-from typing import Any, Union
+from typing import Any
 
-IPAddress = Union[ipaddress.IPv4Address, ipaddress.IPv6Address]
+IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 
 _BRACKETED = re.compile(r"^\[([0-9a-fA-F:.]+)\](?::\d+)?$")
 _V4_PORT = re.compile(r"^(\d{1,3}(?:\.\d{1,3}){3}):\d+$")
@@ -128,6 +128,37 @@ class Host:
 
 
 @dataclass
+class GeoInfo:
+    """Offline GeoIP/ASN data for one address (filled in from local .mmdb files)."""
+
+    country: str | None = None  # ISO 3166-1 alpha-2
+    country_name: str | None = None
+    city: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    accuracy_km: float | None = None
+    asn: int | None = None
+    as_org: str | None = None
+    private: bool = False
+
+    @property
+    def has_location(self) -> bool:
+        return self.latitude is not None and self.longitude is not None
+
+    @property
+    def label(self) -> str:
+        if self.private:
+            return "private"
+        return " ".join(p for p in (self.country, self.city) if p)
+
+    @property
+    def asn_label(self) -> str:
+        if self.asn is None:
+            return self.as_org or ""
+        return f"AS{self.asn} {self.as_org or ''}".strip()
+
+
+@dataclass
 class ServerEntry:
     """A user's relation to one server: assigned VPN IP and, if online, the live session."""
 
@@ -140,6 +171,7 @@ class ServerEntry:
     connected_since: int | None = None
     device_name: str | None = None
     platform: str | None = None
+    geo: GeoInfo | None = None  # location of real_address, when a GeoIP db is configured
 
     @classmethod
     def from_api(cls, d: dict) -> ServerEntry:

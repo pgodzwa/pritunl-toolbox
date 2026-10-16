@@ -20,3 +20,11 @@ url = "https://vpn-staging.example.com"
 api_token = "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
 api_secret_cmd = "op read op://ops/pritunl-staging/secret"
 read_only = false
+
+# Offline GeoIP / ASN enrichment (optional). Without this table the toolbox looks for
+# GeoLite2-City/ASN, dbip-*-lite or ipinfo_lite .mmdb files in ~/.local/share/GeoIP,
+# /usr/share/GeoIP and /var/lib/GeoIP. Lookups never leave this machine.
+[geoip]
+city = "/usr/share/GeoIP/GeoLite2-City.mmdb"
+asn = "/usr/share/GeoIP/GeoLite2-ASN.mmdb"
+autodiscover = true
