@@ -1,11 +1,12 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=84.0.0", "setuptools-scm>=10.3.4"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "pritunl-toolbox"
-version = "0.2.0"
-description = "CLI and terminal UI toolbox for Pritunl VPN: who is connected, who owns an IP, search, GeoIP and audits."
+# Version comes from the git tag (vX.Y.Z) created by the release workflow.
+dynamic = ["version"]
+description = "Read-only CLI and terminal UI for Pritunl VPN: who is connected, who owns an IP, search, GeoIP and audits."
 readme = "README.md"
 requires-python = ">=3.10"
 classifiers = [
@@ -16,7 +17,7 @@ classifiers = [
     "Topic :: System :: Networking",
     "Topic :: Security",
 ]
-# Floors track the latest releases; exact, hash-pinned versions live in requirements*.lock
+# Floors track the latest releases; exact, hash-pinned versions live in requirements*.txt
 dependencies = [
     "click>=8.5.0",
     "maxminddb>=3.2.0",
@@ -28,11 +29,14 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "build>=1.6.1",
     "pip-audit>=2.10.1",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "responses>=0.26.3",
     "ruff>=0.17.1",
+    "setuptools>=84.0.0",
+    "setuptools-scm>=10.3.4",
 ]
 
 [project.scripts]
@@ -41,6 +45,10 @@ ptb = "pritunl_toolbox.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools_scm]
+# Builds without git metadata (e.g. a plain directory copy) still work.
+fallback_version = "0.0.0+unknown"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -57,3 +65,4 @@ ignore = ["S101"]  # asserts are fine in tests
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S"]
+"scripts/*" = ["S"]

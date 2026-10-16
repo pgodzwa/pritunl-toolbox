@@ -13,18 +13,24 @@ verify_tls = true
 # ca_bundle = "/etc/ssl/certs/internal-ca.pem"
 timeout = 15
 workers = 4          # parallel API requests (1-16)
-read_only = true     # blocks enable/disable and any future write commands
 
 [profiles."staging"]
 url = "https://vpn-staging.example.com"
 api_token = "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
 api_secret_cmd = "op read op://ops/pritunl-staging/secret"
-read_only = false
 
-# Offline GeoIP / ASN enrichment (optional). Without this table the toolbox looks for
+# The toolbox is always read-only towards Pritunl; no setting can enable writes.
+
+# Offline GeoIP / ASN enrichment (optional). `pritunl-toolbox geo setup` writes this table for
+# you after downloading MaxMind GeoLite2. Without it the toolbox looks for
 # GeoLite2-City/ASN, dbip-*-lite or ipinfo_lite .mmdb files in ~/.local/share/GeoIP,
 # /usr/share/GeoIP and /var/lib/GeoIP. Lookups never leave this machine.
 [geoip]
 city = "/usr/share/GeoIP/GeoLite2-City.mmdb"
 asn = "/usr/share/GeoIP/GeoLite2-ASN.mmdb"
 autodiscover = true
+# Written by `geo setup` when you choose to store credentials for `geo update`:
+# dir = "/home/me/.local/share/GeoIP"
+# maxmind_editions = ["GeoLite2-City", "GeoLite2-ASN"]
+# maxmind_account_id = "123456"
+# maxmind_license_key_cmd = "pass show maxmind/license-key"   # or maxmind_license_key = "..."

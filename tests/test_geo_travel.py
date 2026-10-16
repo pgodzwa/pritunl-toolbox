@@ -202,7 +202,7 @@ def test_travel_command(fake_api, fake_geo):
 def test_travel_with_audit(fake_api, fake_geo):
     r = run("travel", "--audit", "name:=alice", "-o", "json")
     assert r.exit_code == 0  # alice only seen in Warsaw
-    assert ("GET", "/audit/org1/u_alice") in fake_api.calls
+    assert ("GET", "/user/org1/u_alice/audit") in fake_api.calls
 
 
 def test_geo_lookup_and_status(fake_api, fake_geo):

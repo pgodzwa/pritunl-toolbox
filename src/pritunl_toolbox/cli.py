@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import functools
 import json
+import os
 import re
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 import click
@@ -32,10 +34,12 @@ from pritunl_toolbox.config import (
     default_config_path,
     load_geo_settings,
     load_profile,
+    save_geo_settings,
     save_profile,
 )
 from pritunl_toolbox.context import Ctx
 from pritunl_toolbox.geo import GeoError, GeoResolver, resolve_paths
+from pritunl_toolbox.geoinstall import GeoInstallError
 from pritunl_toolbox.inventory import Inventory
 from pritunl_toolbox.models import Host, Organization, Server, User
 from pritunl_toolbox.output import (
@@ -72,7 +76,7 @@ def handle_errors(func):
     def wrapper(*args, **kwargs):
         try:
             return func(*args, **kwargs)
-        except (ConfigError, PritunlAPIError, QueryError, GeoError) as exc:
+        except (ConfigError, PritunlAPIError, QueryError, GeoError, GeoInstallError) as exc:
             error(str(exc))
             sys.exit(2)
         except KeyboardInterrupt:
@@ -187,6 +191,8 @@ def _sort_sessions(pairs):
 def cli(ctx, profile_name, url, ca_bundle, insecure, timeout, workers, geo_mode):
     """Toolbox for Pritunl VPN: who is connected, who owns an IP, user search and audits.
 
+    Strictly read-only: it never changes anything on the Pritunl server.
+
     \b
     Quick start:
       pritunl-toolbox config init
@@ -213,8 +219,6 @@ def config():
 @click.option("--name", default="default", show_default=True, help="Profile name.")
 @click.option("--url", prompt="Pritunl URL (e.g. https://vpn.example.com)")
 @click.option("--token", prompt="API token")
-@click.option("--read-only/--read-write", default=True, show_default=True,
-              help="Block all write operations (enable/disable users) for this profile.")
 @click.option("--ca-bundle", default=None, help="Path to CA bundle for private CAs.")
 @click.option("--secret-cmd", default=None,
               help="Command printing the API secret (e.g. 'pass show pritunl'); "
@@ -222,10 +226,13 @@ def config():
 @click.option("--default/--no-default", "make_default", default=True,
               help="Make this the default profile.")
 @handle_errors
-def config_init(name, url, token, read_only, ca_bundle, secret_cmd, make_default):
-    """Create or update a profile (secret is prompted, never passed on argv)."""
-    values: dict[str, Any] = {"url": url.rstrip("/"), "api_token": token,
-                              "read_only": read_only, "verify_tls": True}
+def config_init(name, url, token, ca_bundle, secret_cmd, make_default):
+    """Create or update a profile (secret is prompted, never passed on argv).
+
+    The toolbox only ever reads from Pritunl, so a dedicated administrator with API access
+    is enough; nothing is changed on the server.
+    """
+    values: dict[str, Any] = {"url": url.rstrip("/"), "api_token": token, "verify_tls": True}
     if ca_bundle:
         values["ca_bundle"] = ca_bundle
     if secret_cmd:
@@ -328,7 +335,7 @@ def hosts(c: Ctx, fmt):
 
 
 def _session_key(u: User, e) -> tuple:
-    return (u.id, e.server_id, e.real_address, e.virt_address, e.connected_since)
+    return (u.id, e.server_id, e.session_id, e.real_address, e.virt_address, e.connected_since)
 
 
 @cli.command(cls=QueryCommand)
@@ -349,7 +356,7 @@ def online(c: Ctx, terms, fmt, summary, watch, **flags):
     query = require_geo(c, build_query(terms, **flags))
 
     def snapshot():
-        inv = c.inventory(with_servers=False)
+        inv = c.inventory()
         pairs = [(m.user, e) for m in query.run(inv.users) for e in m.entries if e.connected]
         return _sort_sessions(pairs)
 
@@ -432,7 +439,7 @@ def search(c: Ctx, terms, fmt, expand, limit, **flags):
       search -country:PL --online         (with GeoIP) sessions from abroad
     """
     query = require_geo(c, build_query(terms, **flags))
-    inv = c.inventory(with_servers=False)
+    inv = c.inventory()
     matches = query.run(inv.users)
     matches.sort(key=lambda m: (m.user.org_name.lower(), m.user.name.lower()))
     total = len(matches)
@@ -462,7 +469,7 @@ def whois(c: Ctx, ips, fmt):
 
     Accepts single IPs or CIDR ranges. Exit code 1 if nothing matched.
     """
-    inv = c.inventory(with_servers=False)
+    inv = c.inventory()
     now = time.time()
     rows: list[dict] = []
     data: list[dict] = []
@@ -502,7 +509,7 @@ def whois(c: Ctx, ips, fmt):
 def ips(c: Ctx, terms, fmt, hosts_fmt, domain, **flags):
     """Export the user -> VPN IP assignment map (for firewalls, DNS, inventories)."""
     query = require_geo(c, build_query(terms, **flags))
-    inv = c.inventory(with_servers=False)
+    inv = c.inventory()
     rows = []
     for m in sorted(query.run(inv.users), key=lambda m: (m.user.org_name, m.user.name)):
         entries = m.entries if query.has_entry_terms else m.user.servers
@@ -534,11 +541,11 @@ def ips(c: Ctx, terms, fmt, hosts_fmt, domain, **flags):
 
 @cli.group()
 def user():
-    """Inspect and manage single users."""
+    """Inspect single users (read-only)."""
 
 
 def _resolve_user(c: Ctx, ident: str, org: str | None) -> tuple[Inventory, User]:
-    inv = c.inventory(with_servers=False, org_filter=org)
+    inv = c.inventory(org_filter=org)
     found = inv.find_users(ident)
     if not found:
         raise click.ClickException(f"no user matches '{ident}' (try 'search {ident}')")
@@ -594,47 +601,6 @@ def user_show(c: Ctx, ident, org, audit, fmt):
                           ("message", "Message")], "table", title="Audit log")
 
 
-def _set_disabled(c: Ctx, ident: str, org: str | None, yes: bool, disabled: bool) -> None:
-    if c.profile.read_only:
-        raise click.ClickException(
-            f"profile '{c.profile.name}' is read_only; write operations are blocked")
-    _, u = _resolve_user(c, ident, org)
-    verb = "disable" if disabled else "enable"
-    if u.disabled == disabled:
-        console.print(Text(f"{u.org_name}/{u.name} is already {verb}d."))
-        return
-    sessions = u.sessions
-    desc = f"{verb.upper()} {u.org_name}/{u.name} <{u.email or ''}> (id {u.id})"
-    if disabled and sessions:
-        desc += f"; {len(sessions)} live session(s) will be dropped"
-    if not yes and not click.confirm(sanitize(desc) + "?", default=False):
-        raise click.Abort()
-    c.client.set_user_disabled(u.org_id, u.id, disabled)
-    console.print(Text(f"{u.org_name}/{u.name} {verb}d.", style="green"))
-
-
-@user.command("disable")
-@click.argument("ident")
-@click.option("--org")
-@click.option("-y", "--yes", is_flag=True, help="Do not ask for confirmation.")
-@pass_ctx
-@handle_errors
-def user_disable(c: Ctx, ident, org, yes):
-    """Disable a user (drops their live sessions). Needs a read-write profile."""
-    _set_disabled(c, ident, org, yes, True)
-
-
-@user.command("enable")
-@click.argument("ident")
-@click.option("--org")
-@click.option("-y", "--yes", is_flag=True, help="Do not ask for confirmation.")
-@pass_ctx
-@handle_errors
-def user_enable(c: Ctx, ident, org, yes):
-    """Re-enable a disabled user. Needs a read-write profile."""
-    _set_disabled(c, ident, org, yes, False)
-
-
 # ----------------------------------------------------------------------------- server
 
 
@@ -666,7 +632,7 @@ def server_show(c: Ctx, ref, fmt):
     orgs_ = c.client.server_orgs(s.id)
     routes = c.client.server_routes(s.id)
     hosts_ = c.client.server_hosts(s.id)
-    inv = c.inventory(with_servers=False)
+    inv = c.inventory()
     pairs = _sort_sessions((u, e) for u, e in iter_sessions(inv.users) if e.server_id == s.id)
     if fmt == "json":
         render_json({
@@ -841,7 +807,7 @@ def travel(c: Ctx, terms, fmt, use_audit, days, max_users, max_speed, min_distan
     if c.geo is None:
         raise GeoError("impossible-travel detection needs a GeoIP database (see 'geo status')")
     query = require_geo(c, Query.parse(terms))
-    inv = c.inventory(with_servers=False)
+    inv = c.inventory()
     users = [m.user for m in query.run(inv.users)]
     now = time.time()
     observations = session_observations(users, now)
@@ -884,6 +850,8 @@ def geo():
 
 
 GEO_HELP = """No GeoIP database found. Options (all offline, no API calls per lookup):
+  * Easiest: run 'pritunl-toolbox geo setup' - a wizard that downloads MaxMind GeoLite2
+    (free account) and configures everything.
   * MaxMind GeoLite2 (free account): install 'geoipupdate', set EditionIDs to
     'GeoLite2-City GeoLite2-ASN' and run it weekly (files land in /usr/share/GeoIP).
   * DB-IP lite (no account): download dbip-city-lite and dbip-asn-lite .mmdb files
@@ -935,6 +903,146 @@ def geo_lookup(c: Ctx, ips, fmt):
     emit(rows, [("ip", "IP"), ("location", "Location"), ("country", "Country"),
                 ("asn", "ASN"), ("lat", "Lat"), ("lon", "Lon"), ("accuracy_km", "± km")],
          fmt, title="GeoIP lookup")
+
+
+def _progress_printer(quiet: bool):
+    last: dict[str, int] = {}
+
+    def progress(edition: str, done: int, total: int | None) -> None:
+        if quiet:
+            return
+        pct = int(done * 100 / total) if total else None
+        step = (pct // 10) if pct is not None else done // (10 * 1024 * 1024)
+        if last.get(edition) != step:
+            last[edition] = step
+            shown = f"{pct}%" if pct is not None else f"{done // 1024 // 1024} MB"
+            click.echo(f"  {edition}: {shown}", err=True)
+
+    return progress
+
+
+@geo.command("setup")
+@click.option("--dir", "install_dir", type=click.Path(file_okay=False, path_type=Path),
+              help="Where to put the databases (default: ~/.local/share/GeoIP).")
+@pass_ctx
+@handle_errors
+def geo_setup(c: Ctx, install_dir):
+    """Wizard: download MaxMind GeoLite2 databases and configure GeoIP.
+
+    Only talks to MaxMind over HTTPS; nothing is sent to or changed on the Pritunl server.
+    The license key is prompted (hidden) or read from PRITUNL_MAXMIND_LICENSE_KEY - never
+    passed on the command line.
+    """
+    from pritunl_toolbox import geoinstall as gi
+
+    settings = load_geo_settings()
+    click.echo(f"""
+GeoLite2 setup
+==============
+MaxMind's free GeoLite2 databases add country, city and provider (ASN) to connection IPs.
+Lookups then happen locally; no IP address is ever sent anywhere.
+
+You need a free MaxMind account and a license key:
+  1. Sign up:              {gi.SIGNUP_URL}
+  2. Create a license key: {gi.LICENSE_KEY_URL}
+     (Account ID is shown on that page; the key is displayed only once.)
+""")
+    existing = None
+    try:
+        existing = gi.load_credentials(settings)
+    except (gi.GeoInstallError, ConfigError) as exc:
+        warn(f"ignoring stored MaxMind credentials: {exc}")
+    if existing and click.confirm(f"Use stored credentials for account {existing.account_id}?",
+                                  default=True):
+        creds = existing
+    else:
+        account = click.prompt("MaxMind account ID",
+                               value_proc=gi.validate_account_id_click)
+        key = os.environ.get("PRITUNL_MAXMIND_LICENSE_KEY") or click.prompt(
+            "License key (hidden)", hide_input=True, value_proc=gi.validate_license_key_click)
+        creds = gi.Credentials(account, gi.validate_license_key(key))
+
+    click.echo("\nDatabases:")
+    editions = []
+    if click.confirm("  GeoLite2-City  (country + city + coordinates, ~60 MB; needed for "
+                     "impossible travel)", default=True):
+        editions.append("GeoLite2-City")
+    elif click.confirm("  GeoLite2-Country (country only, ~10 MB)", default=True):
+        editions.append("GeoLite2-Country")
+    if click.confirm("  GeoLite2-ASN   (network provider, ~10 MB)", default=True):
+        editions.append("GeoLite2-ASN")
+    if not editions:
+        raise click.ClickException("nothing selected")
+
+    default_dir = install_dir or Path(settings.get("dir") or gi.default_install_dir())
+    dest = Path(click.prompt("Install directory", default=str(default_dir))).expanduser()
+
+    click.echo("""
+Store the credentials so 'pritunl-toolbox geo update' can refresh the data later?
+  config  - in the config file (mode 600)
+  command - run a password-manager command instead, e.g. 'pass show maxmind'
+  none    - do not store (you will re-run this wizard to update)""")
+    store = click.prompt("Store credentials", type=click.Choice(["config", "command", "none"]),
+                         default="config")
+    key_cmd = None
+    if store == "command":
+        key_cmd = click.prompt("Command that prints the license key")
+
+    click.echo(f"\nDownloading {', '.join(editions)} to {dest} ...")
+    results = gi.install(editions, creds, dest, force=True, progress=_progress_printer(False))
+
+    values = gi.geo_settings_for(results, dest, editions)
+    values["maxmind_account_id"] = creds.account_id if store != "none" else None
+    values["maxmind_license_key"] = creds.license_key if store == "config" else None
+    values["maxmind_license_key_cmd"] = key_cmd
+    path = save_geo_settings(values)
+    for r in results:
+        click.echo(f"  installed {r.path} (data from {fmt_ts(r.build_epoch)})")
+    click.echo(f"Saved GeoIP settings to {path}")
+
+    c.reset_geo()
+    resolver = GeoResolver.from_settings(load_geo_settings())
+    probe = resolver.lookup("8.8.8.8") if resolver else None
+    if probe:
+        click.echo(f"Test lookup 8.8.8.8 -> {probe.label or '?'} / {probe.asn_label or '?'}")
+
+    if store != "none":
+        line = gi.cron_line()
+        click.echo(f"\nMaxMind updates GeoLite2 twice a week. Suggested cron entry:\n  {line}")
+        if click.confirm("Add it to your crontab now?", default=False):
+            gi.install_cron(line)
+            click.echo("Cron job installed.")
+    else:
+        click.echo("\nCredentials not stored: re-run 'geo setup' to refresh the data.")
+
+
+@geo.command("update")
+@click.option("--force", is_flag=True, help="Download even if the local data is recent.")
+@click.option("--quiet", is_flag=True, help="Only print errors (for cron).")
+@handle_errors
+def geo_update(force, quiet):
+    """Refresh GeoLite2 databases using credentials stored by 'geo setup'.
+
+    Skips databases younger than 3 days (MaxMind limits daily downloads) unless --force.
+    """
+    from pritunl_toolbox import geoinstall as gi
+
+    settings = load_geo_settings()
+    creds = gi.load_credentials(settings)
+    if creds is None:
+        raise click.ClickException("no MaxMind credentials stored; run "
+                                   "'pritunl-toolbox geo setup' first")
+    editions = [e for e in settings.get("maxmind_editions") or gi.DEFAULT_EDITIONS
+                if e in gi.EDITIONS]
+    dest = Path(settings.get("dir") or gi.default_install_dir()).expanduser()
+    results = gi.install(editions, creds, dest, force=force,
+                         progress=_progress_printer(quiet))
+    save_geo_settings({k: v for k, v in gi.geo_settings_for(results, dest, editions).items()
+                       if v is not None})
+    if not quiet:
+        for r in results:
+            state = "up to date" if r.skipped else "updated"
+            click.echo(f"{r.edition}: {state} ({fmt_ts(r.build_epoch)}) {r.path}")
 
 
 # ----------------------------------------------------------------------------- tui

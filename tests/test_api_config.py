@@ -52,9 +52,17 @@ def test_redirects_not_followed():
         assert len(rsps.calls) == 1
 
 
-def test_read_only_blocks_writes():
-    with pytest.raises(ReadOnlyError):
-        PritunlClient(profile(read_only=True)).set_user_disabled("o", "u", True)
+@pytest.mark.parametrize("method", ["POST", "PUT", "PATCH", "DELETE", "put"])
+def test_client_refuses_every_write_method(method):
+    with responses.RequestsMock() as rsps:  # no request may reach the network
+        with pytest.raises(ReadOnlyError, match="read-only"):
+            PritunlClient(profile()).request(method, "/user/o/u")
+        assert len(rsps.calls) == 0
+
+
+def test_client_has_no_write_helpers():
+    assert not [n for n in dir(PritunlClient)
+                if n.startswith(("set_", "create", "delete", "update", "put", "post"))]
 
 
 def test_retry_resigns_with_new_nonce(monkeypatch):
