@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 pritunl-toolbox contributors
 """Row builders for the CLI and the security/health findings used by ``report``."""
 
 from __future__ import annotations

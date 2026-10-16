@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 pritunl-toolbox contributors
 """pritunl-toolbox command line interface."""
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ from typing import Any
 import click
 from rich.text import Text
 
-from pritunl_toolbox import __version__
+from pritunl_toolbox import LICENSE_NOTICE, __version__
 from pritunl_toolbox.analysis import (
     SESSION_COLUMNS,
     SEVERITY_ORDER,
@@ -175,7 +177,8 @@ def _sort_sessions(pairs):
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
-@click.version_option(__version__, prog_name="pritunl-toolbox")
+@click.version_option(__version__, prog_name="pritunl-toolbox",
+                      message="%(prog)s, version %(version)s\n" + LICENSE_NOTICE)
 @click.option("-p", "--profile", "profile_name", envvar="PRITUNL_PROFILE",
               help="Config profile to use.")
 @click.option("--url", help="Override Pritunl URL.")

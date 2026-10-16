@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 pritunl-toolbox contributors
 """Impossible-travel detection.
 
 An *observation* is "user U was seen at IP X (located at lat/lon) at time T". Sources:

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 pritunl-toolbox contributors
 """A small query language for searching Pritunl users and sessions.
 
 Syntax: whitespace-separated terms, all of which must match (AND).

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 pritunl-toolbox contributors
 """Interactive terminal UI (Textual). Strictly read-only towards Pritunl.
 
 Navigation model
@@ -52,6 +54,7 @@ from textual.widgets import (
     Tabs,
 )
 
+from pritunl_toolbox import LICENSE_NOTICE, __version__
 from pritunl_toolbox.analysis import (
     SESSION_COLUMNS,
     SEVERITY_ORDER,
@@ -190,6 +193,7 @@ class HelpScreen(ModalScreen[None]):
         with Vertical(id="help"):
             yield Static(Text("Keyboard reference", style="bold"))
             yield Static(Text(HELP_TEXT))
+            yield Static(Text(f"pritunl-toolbox {__version__}\n{LICENSE_NOTICE}", style="dim"))
             with Horizontal(classes="buttons"):
                 yield Button("Close", id="btn-close", variant="primary")
         yield Footer()

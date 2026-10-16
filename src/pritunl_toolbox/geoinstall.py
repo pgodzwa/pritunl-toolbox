@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 pritunl-toolbox contributors
 """Download and install MaxMind GeoLite2 databases.
 
 Talks only to MaxMind (download.maxmind.com, HTTPS) and writes local files; it never contacts

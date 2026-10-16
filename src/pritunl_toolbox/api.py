@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 pritunl-toolbox contributors
 """Minimal, signed Pritunl REST API client.
 
 Pritunl API auth: every request carries Auth-Token, Auth-Timestamp, Auth-Nonce and

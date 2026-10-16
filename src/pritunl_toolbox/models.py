@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 pritunl-toolbox contributors
 """Typed views over Pritunl API payloads.
 
 Only an explicit allowlist of fields is copied from API responses. Sensitive values that the
