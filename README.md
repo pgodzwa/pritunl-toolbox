@@ -49,6 +49,11 @@ pipx upgrade pritunl-toolbox
 pipx install --force "git+https://github.com/pgodzwa/pritunl-toolbox@main"
 ```
 
+If `ptb --version` shows something like `0.1.dev9+g9459a08` or `1.0.1.dev2+g…`, you installed a
+commit that has not been released yet. That happens if you install from `main` in the minute
+before its release finishes, or when a merge was marked `[skip release]`. Re-run the upgrade
+later, or pin a release tag as shown below.
+
 ### A specific version
 
 Every release is a tag, so pin it with `@vX.Y.Z`. The same command upgrades, downgrades or
@@ -339,14 +344,16 @@ next version and publishes a GitHub release with the wheel, sdist, `requirements
 `SHA256SUMS`, plus auto-generated notes. The package version comes from the git tag
 (`setuptools-scm`), so `ptb --version` always matches the release.
 
-Version bumps are decided by `scripts/release_version.py` from the merged commits and PR titles:
+Version bumps are decided by `scripts/release_version.py` from the **titles** of the commits
+merged since the last release. A title is the commit subject or, for a merge commit, the PR
+title. Words elsewhere in a description do not count.
 
-| In a commit message or PR title | Bump | Example |
+| In a PR / commit title | Bump | Example |
 | --- | --- | --- |
 | *(nothing special)* | patch | `1.0.0 → 1.0.1` |
 | `feat:` / `feat(scope):` or `[minor]` | minor | `1.0.1 → 1.1.0` |
-| `BREAKING CHANGE`, `type!:` or `[major]` | major | `1.1.0 → 2.0.0` |
-| `[skip release]` | no release | |
+| `type!:` (e.g. `refactor!:`), `[major]`, or a `BREAKING CHANGE:` footer line | major | `1.1.0 → 2.0.0` |
+| `[skip release]` in the title of the merged PR / pushed commit | no release | |
 
 The first release is `v1.0.0`.
 

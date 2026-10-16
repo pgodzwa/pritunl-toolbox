@@ -48,7 +48,7 @@ where = ["src"]
 
 [tool.setuptools_scm]
 # Builds without git metadata (e.g. a plain directory copy) still work.
-fallback_version = "0.0.0+unknown"
+fallback_version = "0.0.0"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

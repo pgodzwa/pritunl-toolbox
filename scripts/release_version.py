@@ -3,12 +3,17 @@
 
 Used by .github/workflows/release.yml on every push to main.
 
-Rules (commits since the latest vX.Y.Z tag; merge commits include the PR title/body):
-  * no release tag yet                                   -> 1.0.0
-  * "BREAKING CHANGE", "[major]" or a "type!:" subject   -> major bump
-  * "[minor]" or a "feat:" / "feat(scope):" subject      -> minor bump
-  * anything else                                        -> patch bump
-  * "[skip release]" in any commit, or HEAD already tagged -> no release
+Only commit *titles* count (the subject line; for a GitHub merge commit also the PR title on
+the line after it), plus a "BREAKING CHANGE:" footer at the start of a line. Text elsewhere in
+a message - e.g. a description that merely mentions these markers - is ignored.
+
+Rules (commits since the latest vX.Y.Z tag):
+  * no release tag yet                                        -> 1.0.0
+  * "type!:" title, "[major]" in a title, BREAKING CHANGE: footer -> major bump
+  * "feat:" / "feat(scope):" title or "[minor]" in a title     -> minor bump
+  * anything else                                             -> patch bump
+  * "[skip release]" in the title of the pushed commit (HEAD) -> no release
+  * HEAD already tagged (workflow re-run)                     -> no release
 
 Prints GitHub Actions outputs (key=value lines): release, version, previous, bump.
 Commit messages are only read, never executed or interpolated into a shell.
@@ -23,8 +28,10 @@ import sys
 TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 FIRST_VERSION = (1, 0, 0)
 
-MAJOR_RE = re.compile(r"BREAKING[ -]CHANGE|\[major\]|^\s*\w+(\([^)]*\))?!:", re.I | re.M)
-MINOR_RE = re.compile(r"\[minor\]|^\s*feat(\([^)]*\))?:", re.I | re.M)
+MERGE_RE = re.compile(r"^Merge (pull request|branch|remote-tracking branch) ", re.I)
+MAJOR_TITLE_RE = re.compile(r"^\w+(\([^)]*\))?!:|\[major\]", re.I)
+MINOR_TITLE_RE = re.compile(r"^feat(\([^)]*\))?:|\[minor\]", re.I)
+BREAKING_FOOTER_RE = re.compile(r"^BREAKING[ -]CHANGE:", re.M)
 SKIP_RE = re.compile(r"\[skip release\]", re.I)
 
 
@@ -33,19 +40,37 @@ def parse_tag(tag: str) -> tuple[int, int, int] | None:
     return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
 
 
+def titles(message: str) -> list[str]:
+    """Subject line, plus the PR title for GitHub merge commits."""
+    lines = [ln.strip() for ln in message.strip().splitlines()]
+    if not lines:
+        return []
+    out = [lines[0]]
+    if MERGE_RE.match(lines[0]):
+        rest = [ln for ln in lines[1:] if ln]
+        if rest:
+            out.append(rest[0])
+    return out
+
+
 def bump_kind(messages: list[str]) -> str:
-    text = "\n".join(messages)
-    if MAJOR_RE.search(text):
+    def any_title(rx: re.Pattern) -> bool:
+        return any(rx.search(t) for m in messages for t in titles(m))
+
+    if any_title(MAJOR_TITLE_RE) or any(BREAKING_FOOTER_RE.search(m) for m in messages):
         return "major"
-    if MINOR_RE.search(text):
+    if any_title(MINOR_TITLE_RE):
         return "minor"
     return "patch"
 
 
 def next_version(tags: list[str], messages: list[str]) -> tuple[str | None, str | None, str]:
-    """Returns (next_version or None to skip, previous_version, bump)."""
+    """``messages`` are newest first; messages[0] is the pushed commit (HEAD).
+
+    Returns (next_version or None to skip, previous_version, bump).
+    """
     versions = sorted(v for v in (parse_tag(t) for t in tags) if v)
-    if any(SKIP_RE.search(m) for m in messages):
+    if messages and any(SKIP_RE.search(t) for t in titles(messages[0])):
         return None, _fmt(versions[-1]) if versions else None, "skip"
     if not versions:
         return _fmt(FIRST_VERSION), None, "initial"
