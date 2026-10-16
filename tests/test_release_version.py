@@ -22,9 +22,32 @@ spec.loader.exec_module(rv)
     (["v1.2.3"], ["refactor!: drop python 3.10"], ("2.0.0", "1.2.3", "major")),
     (["v1.2.3"], ["Docs only [skip release]"], (None, "1.2.3", "skip")),
     (["v1.9.0", "v1.10.0", "junk", "v1.2.0"], ["fix"], ("1.10.1", "1.10.0", "patch")),
+    # skip only applies to the pushed commit's title / PR title, not to older commits
+    (["v1.0.0"], ["Merge pull request #5 from x/y\n\nDocs typo [skip release]"],
+     (None, "1.0.0", "skip")),
+    (["v1.0.0"], ["Fix whois", "Docs [skip release]"], ("1.0.1", "1.0.0", "patch")),
+    # markers merely mentioned in a commit body do not count
+    (["v1.0.0"], ["Release rules\n\n- feat: bumps minor, BREAKING CHANGE bumps major,\n"
+                  "  [skip release] skips, refactor!: is major"], ("1.0.1", "1.0.0", "patch")),
+    (["v1.0.0"], ["Squash title (#9)\n\nBREAKING CHANGE: config renamed"],
+     ("2.0.0", "1.0.0", "major")),
 ])
+
+
 def test_next_version(tags, messages, expected):
     assert rv.next_version(tags, messages) == expected
+
+
+def test_regression_first_release_not_skipped_by_documented_marker():
+    """The first release was suppressed because an old commit *described* [skip release]."""
+    messages = [
+        "Merge pull request #3 from pgodzwa/ccr\n\nFix empty server view, add releases",
+        "Fix empty server view\n\nReleases:\n- release.yml: every push to main ... (first "
+        "v1.0.0; feat -> minor, BREAKING/! -> major, else patch;\n  [skip release] skips), "
+        "builds with hash-pinned tools",
+        "Merge pull request #1 from pgodzwa/dependabot/github_actions/actions/setup-python-7",
+    ]
+    assert rv.next_version([], messages) == ("1.0.0", None, "initial")
 
 
 def run_script(repo):
