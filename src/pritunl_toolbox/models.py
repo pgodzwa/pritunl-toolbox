@@ -160,7 +160,13 @@ class GeoInfo:
 
 @dataclass
 class ServerEntry:
-    """A user's relation to one server: assigned VPN IP and, if online, the live session."""
+    """A user's relation to one server: assigned VPN IP and, if online, the live session.
+
+    Pritunl quirk: for a *connected* entry the API replaces both ``id`` and ``server_id`` with
+    the client session id (pritunl/handlers/user.py, user_get). The session id is kept in
+    ``session_id`` and ``server_id`` is mapped back to the real server by name in
+    :func:`pritunl_toolbox.inventory.load_inventory`.
+    """
 
     server_id: str
     server_name: str
@@ -172,13 +178,17 @@ class ServerEntry:
     device_name: str | None = None
     platform: str | None = None
     geo: GeoInfo | None = None  # location of real_address, when a GeoIP db is configured
+    session_id: str | None = None  # Pritunl client session id for connected entries
 
     @classmethod
     def from_api(cls, d: dict) -> ServerEntry:
+        connected = bool(d.get("status"))
+        raw_id = str(d.get("server_id") or d.get("id") or "")
         return cls(
-            server_id=str(d.get("server_id") or d.get("id") or ""),
+            server_id=raw_id,
+            session_id=str(d.get("id") or raw_id) if connected else None,
             server_name=str(d.get("name") or ""),
-            connected=bool(d.get("status")),
+            connected=connected,
             virt_address=ip_str(d.get("virt_address")),
             virt_address6=ip_str(d.get("virt_address6")),
             real_address=ip_str(d.get("real_address")),

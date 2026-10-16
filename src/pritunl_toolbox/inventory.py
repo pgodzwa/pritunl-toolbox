@@ -46,13 +46,33 @@ class Inventory:
                 if u.name.lower() == ident_l or (u.email or "").lower() == ident_l]
 
 
+def normalize_server_ids(users: list[User], servers: list[Server]) -> None:
+    """Point every server entry at the real server id.
+
+    Connected entries arrive with the client *session* id in ``id``/``server_id`` (see
+    ServerEntry), so they are resolved by server name. Names are unique in practice; if two
+    servers ever share a name the entry is left untouched rather than guessed.
+    """
+    known = {s.id for s in servers}
+    by_name: dict[str, list[str]] = {}
+    for s in servers:
+        by_name.setdefault(s.name, []).append(s.id)
+    for u in users:
+        for e in u.servers:
+            if e.server_id in known:
+                continue
+            ids = by_name.get(e.server_name, [])
+            if len(ids) == 1:
+                e.server_id = ids[0]
+
+
 def load_inventory(client: PritunlClient, *, with_users: bool = True,
-                   with_servers: bool = True, org_filter: str | None = None,
-                   workers: int | None = None) -> Inventory:
+                   org_filter: str | None = None, workers: int | None = None) -> Inventory:
     workers = workers or client.profile.workers
     inv = Inventory()
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        servers_f = pool.submit(client.servers) if with_servers else None
+        # The server list is always needed: it maps live sessions back to their server.
+        servers_f = pool.submit(client.servers)
         inv.orgs = [Organization.from_api(o) for o in client.organizations()]
         if org_filter:
             inv.orgs = inv.org_by_ref(org_filter)
@@ -61,7 +81,7 @@ def load_inventory(client: PritunlClient, *, with_users: bool = True,
             for org, fut in futures:
                 inv.users.extend(User.from_api(u, org) for u in fut.result()
                                  if isinstance(u, dict))
-        if servers_f is not None:
-            inv.servers = [Server.from_api(s) for s in servers_f.result()]
+        inv.servers = [Server.from_api(s) for s in servers_f.result()]
+    normalize_server_ids(inv.users, inv.servers)
     inv.fetched_at = time.time()
     return inv

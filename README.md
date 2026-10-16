@@ -1,7 +1,9 @@
 # pritunl-toolbox
 
-A command-line toolbox and interactive terminal UI for [Pritunl](https://pritunl.com) VPN admins.
-It answers the questions the web console makes awkward:
+A **read-only** command-line toolbox and interactive terminal UI for
+[Pritunl](https://pritunl.com) VPN admins. It never changes anything on your Pritunl server: the
+API client refuses every request that is not `GET`/`HEAD`. It answers the questions the web
+console makes awkward:
 
 - **Who is connected right now**, to which server, from where, on what device?
 - **Who owns this IP?** Works for a VPN IP (assigned or live) and for a real/public IP, single
@@ -14,7 +16,7 @@ It answers the questions the web console makes awkward:
 - **Security & hygiene report**: disabled users still connected, accounts used from several IPs at
   once, duplicate VPN IPs, users bypassing 2FA, stale accounts, servers without 2FA.
 - **Terminal UI** (`ptb tui`): dashboard, live sessions with filter, search, whois, servers,
-  report. Select a row for details, audit log, server logs and enable/disable.
+  report. Select a row for details, audit log and server logs.
 
 ```text
 $ ptb online --server prod
@@ -26,29 +28,93 @@ $ ptb online --server prod
 └─────────────┴───────┴─────────────┴──────────┴──────────┴──────────────┴───────────┴──────────────┘
 ```
 
-## Install
+## Install and update
 
-Requires Python 3.10+.
+Requires Python 3.10+. Every change merged to `main` is published as a
+[GitHub release](https://github.com/pgodzwa/pritunl-toolbox/releases) (`v1.0.0`, `v1.0.1`, …) with a wheel, sdist and `SHA256SUMS`.
+[pipx](https://pipx.pypa.io) is recommended: it gives the tool its own virtualenv.
 
-```bash
-pipx install git+https://github.com/pgodzwa/pritunl-toolbox
-```
-
-For a reproducible, tamper-evident install, use the hash-pinned lock file. pip refuses any
-package whose hash doesn't match:
+### Latest version
 
 ```bash
-python -m venv .venv && . .venv/bin/activate
-pip install --require-hashes -r requirements.txt
-pip install --no-deps .
+pipx install "git+https://github.com/pgodzwa/pritunl-toolbox@main"           # main == the latest release
+ptb --version
 ```
 
-This installs two equivalent commands: `pritunl-toolbox` and the short alias `ptb`.
+Update to the newest release later:
+
+```bash
+pipx upgrade pritunl-toolbox
+# or, equivalently
+pipx install --force "git+https://github.com/pgodzwa/pritunl-toolbox@main"
+```
+
+### A specific version
+
+Every release is a tag, so pin it with `@vX.Y.Z`. The same command upgrades, downgrades or
+re-pins an existing install:
+
+```bash
+pipx install --force "git+https://github.com/pgodzwa/pritunl-toolbox@v1.0.0"
+ptb --version                            # pritunl-toolbox, version 1.0.0
+```
+
+The prebuilt wheel works too (replace both version numbers):
+
+```bash
+pipx install --force "https://github.com/pgodzwa/pritunl-toolbox/releases/download/v1.0.0/pritunl_toolbox-1.0.0-py3-none-any.whl"
+```
+
+Find the latest version number on the [releases page](https://github.com/pgodzwa/pritunl-toolbox/releases/latest), with
+`gh release view --repo pgodzwa/pritunl-toolbox`, or with
+`curl -s https://api.github.com/repos/pgodzwa/pritunl-toolbox/releases/latest | grep tag_name`.
+
+### Verified install (hash-pinned)
+
+For servers and jump hosts, install an exact release with checksum verification for the package
+*and* every dependency. Each release ships its `requirements.txt` with sha256 hashes:
+
+```bash
+V=1.0.0
+base=https://github.com/pgodzwa/pritunl-toolbox/releases/download/v$V
+curl -fsSLO "$base/pritunl_toolbox-$V-py3-none-any.whl"
+curl -fsSLO "$base/requirements.txt"
+curl -fsSLO "$base/SHA256SUMS"
+sha256sum --check --ignore-missing SHA256SUMS        # must print OK for both files
+
+python3 -m venv ~/.local/share/pritunl-toolbox
+~/.local/share/pritunl-toolbox/bin/pip install --require-hashes -r requirements.txt
+~/.local/share/pritunl-toolbox/bin/pip install --no-deps "pritunl_toolbox-$V-py3-none-any.whl"
+ln -sf ~/.local/share/pritunl-toolbox/bin/ptb ~/.local/bin/ptb
+```
+
+To update, repeat with the new version number (and `pip install --force-reinstall --no-deps`
+for the wheel).
+
+### Plain pip
+
+```bash
+pip install "git+https://github.com/pgodzwa/pritunl-toolbox@v1.0.0"                      # exact version
+pip install --upgrade "git+https://github.com/pgodzwa/pritunl-toolbox@main"              # latest
+```
+
+### Uninstall
+
+```bash
+pipx uninstall pritunl-toolbox
+```
+
+Installing from GitHub needs read access to the repository. If it is private, use an
+authenticated URL (e.g. via `gh auth setup-git`) or download the release assets with
+`gh release download`.
+
+Both `pritunl-toolbox` and the short alias `ptb` are installed.
 
 ## Configure
 
 1. In Pritunl, open **Administrators**, pick (or create) an admin, enable **API access** and copy
    the API token and secret. Use a dedicated admin for the toolbox so you can revoke it separately.
+   The toolbox only reads; it never uses the admin's write permissions.
 2. Create a profile:
 
 ```bash
@@ -66,7 +132,6 @@ Profiles live in `~/.config/pritunl-toolbox/config.toml` (file mode `600`). See
 | `PRITUNL_API_TOKEN` / `PRITUNL_API_SECRET` | API credentials |
 | `PRITUNL_PROFILE` | Profile name to use |
 | `PRITUNL_CA_BUNDLE` | CA bundle for a private CA |
-| `PRITUNL_READ_ONLY` | `true` blocks all write operations |
 | `PRITUNL_TOOLBOX_CONFIG` | Alternative config file path |
 
 Instead of storing the secret in the file you can set `api_secret_cmd`, e.g.
@@ -83,11 +148,12 @@ Instead of storing the secret in the file you can set `api_secret_cmd`, e.g.
 | `whois IP\|CIDR ...` | Who owns or uses an address: VPN IP (live or assigned) or real IP |
 | `ips [QUERY]` | User→VPN IP assignment map; `--hosts --domain vpn.corp` prints hosts-file lines |
 | `user show ID\|NAME\|EMAIL [--audit]` | Full user view: groups, 2FA bypass, assigned IPs per server, live sessions, audit log |
-| `user disable/enable USER` | Writes (confirmation required, blocked on `read_only` profiles) |
 | `server show NAME` | Server details, orgs, routes, hosts and connected users |
 | `server logs NAME -n 100` | Server process output |
 | `report [--inactive-days 90] [--allowed-countries PL,DE]` | Health and security findings, including impossible travel when GeoIP is available. Exit code 3 if any are high severity |
 | `travel [QUERY] [--audit --days 30]` | Impossible-travel detection from live sessions and, with `--audit`, from Pritunl's audit history |
+| `geo setup` | Wizard: download MaxMind GeoLite2 (free account) and configure GeoIP |
+| `geo update [--force]` | Refresh GeoLite2 with stored credentials (for cron) |
 | `geo status` / `geo lookup IP...` | Which GeoIP databases are in use, and their age / local lookups |
 | `tui [--refresh 30]` | Interactive terminal UI |
 
@@ -105,23 +171,55 @@ ptb tui
 | **2 Online** | Live sessions. Filter while you type using the query language (`group:dev country:PL`) and narrow by server with the dropdown |
 | **3 Search** | Any query (`john`, `10.8.0.15`, `inactive:90d`). The *per server* switch gives one row per server entry |
 | **4 Whois** | Paste IPs or CIDRs to see who owns or uses them |
-| **5 Servers** | Server list. Select one for connected users and server logs |
+| **5 Servers** | Server list with online users per server. Select one for connected users and server logs |
 | **6 Report** | Findings by severity, with an allowed-countries input |
 
-Press **Enter** on any user row for a detail view with servers, live sessions, location and a
-*Load audit log* button. On read-write profiles it also has an *Enable/Disable user* button that
-asks for confirmation.
+**Navigation.** Switching tabs moves the keyboard focus into the tab, so arrow keys work right
+away. Search and Whois start in their input box; everything else starts in the table.
 
-Keys: `1`–`6` tabs · `/` focus filter · `r` refresh · `a` toggle auto-refresh · `x` export the
-current table to CSV · `Esc` close dialog · `q` quit · `Ctrl+P` command palette.
-Exports go to `~/pritunl-toolbox-exports/` (directory `700`, files `600`).
+| Key | Action |
+| --- | --- |
+| `1`–`6`, `[` / `]` | Go to a tab / previous or next tab |
+| `↑` `↓` `PgUp` `PgDn` | Move in a table |
+| `Enter` | Open details for the row: a user, a server (who is connected, logs), or a jump (country or platform → filtered Online tab; duplicate IP → Whois) |
+| `/` | Jump to the tab's filter or query box |
+| `Enter` in a box | Apply and go back to the table |
+| `Esc` or `↓` in a box | Back to the table |
+| `Esc` | Close a dialog (`l` inside one loads the audit log or server logs) |
+| `r` / `a` | Refresh now / toggle auto-refresh |
+| `x` | Export the current table to CSV (`~/pritunl-toolbox-exports/`, directory `700`, files `600`) |
+| `g` | GeoIP setup (MaxMind GeoLite2 download form) |
+| `?` / `q` | Help / quit |
+
+The tab bar is clickable but stays out of the `Tab`-key cycle, so `Tab` only moves between the
+controls of the current tab. While a dialog is open, the global keys are disabled, so nothing
+changes behind it.
 
 ## GeoIP, location search and impossible travel
 
-Geo features use local MaxMind-format databases, so **lookups never leave your machine**:
+Geo features use local MaxMind-format databases, so **lookups never leave your machine**.
 
-- **MaxMind GeoLite2** (free account): install `geoipupdate` with
-  `EditionIDs GeoLite2-City GeoLite2-ASN` and run it weekly.
+**Quickest setup: `ptb geo setup`** (or press `g` in the TUI). The wizard:
+
+1. explains how to get a free [MaxMind account](https://www.maxmind.com/en/geolite2/signup) and
+   [license key](https://www.maxmind.com/en/accounts/current/license-key);
+2. asks for the account ID and license key (the key is hidden and never passed on the command
+   line; `PRITUNL_MAXMIND_LICENSE_KEY` also works);
+3. lets you pick databases: City (needed for impossible travel), ASN, or Country only;
+4. asks for the install directory (default `~/.local/share/GeoIP`);
+5. asks how to store the credentials for updates: in the config file (`600`), via a
+   password-manager command, or not at all;
+6. downloads over HTTPS, verifies MaxMind's SHA-256, checks each file really is the expected
+   database, installs it atomically, updates the config and runs a test lookup;
+7. offers to add a cron job (`ptb geo update --quiet`, twice a week after MaxMind's releases).
+
+`ptb geo update` refreshes the data with the stored credentials. It skips databases younger than
+3 days because MaxMind limits daily downloads; `--force` overrides that. The download only
+talks to MaxMind and changes nothing on the Pritunl server.
+
+Other database sources work too:
+
+- **MaxMind `geoipupdate`** with `EditionIDs GeoLite2-City GeoLite2-ASN`.
 - **DB-IP lite** (no account, CC BY 4.0): put `dbip-city-lite-*.mmdb` and `dbip-asn-lite-*.mmdb`
   into `~/.local/share/GeoIP/`.
 - **IPinfo lite** (`ipinfo_lite.mmdb`, country plus ASN, no city coordinates).
@@ -192,8 +290,9 @@ not "has prod access and has 10.8.0.5 on some server". A negated entry term mean
 
 ## Security notes
 
-- **Read-only by default.** `config init` creates `read_only = true` profiles. Write commands need
-  a read-write profile and ask for confirmation unless you pass `--yes`.
+- **Strictly read-only.** There are no write commands. The API client refuses any HTTP method
+  other than `GET`/`HEAD` before sending it, whatever the configuration, and the test suite
+  fails if any command sends a write request.
 - **Secrets stay off argv.** The API secret is never accepted as a CLI flag, because argv is
   visible in `ps` and shell history. It comes from the config file (`600`, warned if looser),
   an environment variable, or `api_secret_cmd`, which runs without a shell.
@@ -211,6 +310,9 @@ not "has prod access and has 10.8.0.5 on some server". A negated entry term mean
 - **No markup injection in the TUI.** Every TUI cell and label is a pre-sanitised `Text`
   object, because Textual's DataTable would otherwise parse strings as markup.
 - **GeoIP stays local.** Lookups use local databases only; no IPs go to online services.
+  `geo setup` / `geo update` send the MaxMind license key in an auth header (never in a URL),
+  never forward it to the storage redirect, verify the SHA-256, cap sizes, and read only the
+  `.mmdb` member from the archive, so path traversal or links inside it have no effect.
 - **Pinned supply chain.** Lock files carry a sha256 hash for every transitive dependency.
   CI installs with `--require-hashes`, runs `pip-audit` on every push and weekly, and runs with
   a read-only token. Dependabot proposes updates after a 5-day cooldown.
@@ -230,14 +332,30 @@ pip-audit -r requirements.txt -r requirements-dev.txt --require-hashes --disable
 To update dependencies, bump the floors in `pyproject.toml` and regenerate the lock files with
 the command at the top of each `requirements*.txt` (Dependabot does this weekly).
 
+## Releases and versioning
+
+`.github/workflows/release.yml` runs on every push to `main`. It runs the full CI, computes the
+next version and publishes a GitHub release with the wheel, sdist, `requirements.txt` and
+`SHA256SUMS`, plus auto-generated notes. The package version comes from the git tag
+(`setuptools-scm`), so `ptb --version` always matches the release.
+
+Version bumps are decided by `scripts/release_version.py` from the merged commits and PR titles:
+
+| In a commit message or PR title | Bump | Example |
+| --- | --- | --- |
+| *(nothing special)* | patch | `1.0.0 → 1.0.1` |
+| `feat:` / `feat(scope):` or `[minor]` | minor | `1.0.1 → 1.1.0` |
+| `BREAKING CHANGE`, `type!:` or `[major]` | major | `1.1.0 → 2.0.0` |
+| `[skip release]` | no release | |
+
+The first release is `v1.0.0`.
+
 ## Roadmap ideas
 
-- `user disconnect`, `user reset-otp`, and `user key-link` (temporary profile links) with
-  audit-friendly confirmations
 - Session history: persist `online --watch` events to SQLite and answer "who had 10.8.0.15 last
   Tuesday at 14:00?" This would also give impossible-travel detection history without audit logs.
 - Flag connections from known VPN/proxy/Tor exit ranges and hosting ASNs using local lists
-- Bulk operations from CSV: create users, set groups, disable leavers (HR offboarding sync)
+- Read-only offboarding check: compare a CSV of leavers against enabled VPN accounts
 - Prometheus exporter (`ptb exporter`) for sessions per server, users online, and findings
 - Optional encrypted local cache for very large installations
 - Notifications (Slack/webhook) for `report` findings and watched events

@@ -52,7 +52,6 @@ class Profile:
     verify_tls: bool = True
     ca_bundle: str | None = None
     timeout: float = 15.0
-    read_only: bool = False
     workers: int = 4
 
     def describe(self) -> dict[str, Any]:
@@ -65,7 +64,7 @@ class Profile:
             "verify_tls": self.verify_tls,
             "ca_bundle": self.ca_bundle,
             "timeout": self.timeout,
-            "read_only": self.read_only,
+            "mode": "read-only (always)",
             "workers": self.workers,
         }
 
@@ -157,7 +156,6 @@ def load_profile(
         "api_secret": "API_SECRET",
         "ca_bundle": "CA_BUNDLE",
         "timeout": "TIMEOUT",
-        "read_only": "READ_ONLY",
     }
     for key, env in env_map.items():
         val = os.environ.get(ENV_PREFIX + env)
@@ -199,7 +197,6 @@ def load_profile(
         verify_tls=_as_bool(raw.get("verify_tls", True)),
         ca_bundle=raw.get("ca_bundle") or None,
         timeout=timeout,
-        read_only=_as_bool(raw.get("read_only", False)),
         workers=workers,
     )
 
@@ -218,6 +215,8 @@ def _toml_value(value: Any) -> str:
         return "true" if value else "false"
     if isinstance(value, (int, float)):
         return repr(value)
+    if isinstance(value, (list, tuple)):
+        return "[" + ", ".join(_toml_value(v) for v in value) + "]"
     # JSON string escaping produces a valid TOML basic string.
     return json.dumps(str(value), ensure_ascii=False)
 
@@ -246,13 +245,7 @@ def dump_toml(data: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def save_profile(name: str, values: dict[str, Any], path: Path | None = None,
-                 make_default: bool = False) -> Path:
-    path = path or default_config_path()
-    data = load_file(path)
-    data.setdefault("profiles", {})[name] = {k: v for k, v in values.items() if v is not None}
-    if make_default or "default_profile" not in data:
-        data["default_profile"] = name
+def _write_config(data: dict[str, Any], path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     # Create with 0600 from the start so the secret is never world-readable, even briefly.
     tmp = path.with_suffix(".tmp")
@@ -265,3 +258,27 @@ def save_profile(name: str, values: dict[str, Any], path: Path | None = None,
     os.replace(tmp, path)
     os.chmod(path, 0o600)
     return path
+
+
+def save_profile(name: str, values: dict[str, Any], path: Path | None = None,
+                 make_default: bool = False) -> Path:
+    path = path or default_config_path()
+    data = load_file(path)
+    data.setdefault("profiles", {})[name] = {k: v for k, v in values.items() if v is not None}
+    if make_default or "default_profile" not in data:
+        data["default_profile"] = name
+    return _write_config(data, path)
+
+
+def save_geo_settings(values: dict[str, Any], path: Path | None = None) -> Path:
+    """Merge ``values`` into the [geoip] table; a value of None removes that key."""
+    path = path or default_config_path()
+    data = load_file(path)
+    geo = dict(data.get("geoip") or {})
+    for key, value in values.items():
+        if value is None:
+            geo.pop(key, None)
+        else:
+            geo[key] = value
+    data["geoip"] = geo
+    return _write_config(data, path)

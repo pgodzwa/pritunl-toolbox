@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
+    branches-ignore: [main]  # main is tested by release.yml, which calls this workflow
   pull_request:
+  workflow_call:
   schedule:
     - cron: "17 5 * * 1"  # weekly: catch newly published advisories for locked deps
 

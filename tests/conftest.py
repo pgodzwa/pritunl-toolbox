@@ -19,8 +19,11 @@ DAY = 86400
 
 def entry(server_id, name, vip, *, rip=None, since=None, device=None, platform=None):
     online = rip is not None
+    # Mirrors Pritunl's user_get: a connected entry has the *client session* id in both "id"
+    # and "server_id" (pritunl/handlers/user.py); only "name" identifies the server.
+    entry_id = f"sess-{server_id}-{vip}" if online else server_id
     return {
-        "id": server_id, "server_id": server_id, "name": name, "status": online,
+        "id": entry_id, "server_id": entry_id, "name": name, "status": online,
         "virt_address": vip, "virt_address6": None, "real_address": rip,
         "connected_since": since, "device_name": device, "platform": platform,
     }
@@ -49,6 +52,7 @@ def user(uid, name, org, groups, servers, **kw):
         "organization_name": org["name"], "groups": groups, "type": "client",
         "auth_type": "local", "disabled": False, "bypass_secondary": False, "pin": False,
         "last_active": int(NOW - 3600), "otp_secret": "OTP-SECRET-LEAK", "servers": servers,
+        "client_to_client": True,
     }
     d.update(kw)
     return d
@@ -91,13 +95,13 @@ class FakePritunl:
         self.rsps = rsps
         self.nonces: set[str] = set()
         self.calls: list[tuple[str, str]] = []
-        self.puts: list[tuple[str, dict]] = []
+        self.writes: list[tuple[str, str]] = []  # any non-GET request = test failure
         rsps.add_callback(responses.GET, _rx(r"/status$"), callback=self._wrap(self.status))
         rsps.add_callback(responses.GET, _rx(r"/organization$"),
                           callback=self._wrap(lambda r: ORGS))
         rsps.add_callback(responses.GET, _rx(r"/user/[^/]+$"), callback=self._wrap(self.users))
-        rsps.add_callback(responses.PUT, _rx(r"/user/[^/]+/[^/]+$"),
-                          callback=self._wrap(self.put_user))
+        rsps.add_callback(responses.GET, _rx(r"/user/[^/]+/[^/]+$"),
+                          callback=self._wrap(self.single_user))
         rsps.add_callback(responses.GET, _rx(r"/server$"), callback=self._wrap(lambda r: SERVERS))
         rsps.add_callback(responses.GET, _rx(r"/server/[^/]+/output$"),
                           callback=self._wrap(lambda r: {"output": ["line1", "bad\x1b[31mred"]}))
@@ -107,10 +111,14 @@ class FakePritunl:
                           callback=self._wrap(lambda r: [{"network": "10.0.0.0/8", "nat": True}]))
         rsps.add_callback(responses.GET, _rx(r"/server/[^/]+/host$"),
                           callback=self._wrap(lambda r: [{"name": "h1", "status": "online"}]))
-        rsps.add_callback(responses.GET, _rx(r"/audit/[^/]+/[^/]+$"),
+        rsps.add_callback(responses.GET, _rx(r"/user/[^/]+/[^/]+/audit$"),
                           callback=self._wrap(lambda r: [{"timestamp": int(NOW), "type": "login",
                                                           "remote_addr": "203.0.113.10",
                                                           "message": "User logged in"}]))
+        # The toolbox must never write: record any write attempt (checked in fixture teardown)
+        import re as _re
+        for method in (responses.POST, responses.PUT, responses.PATCH, responses.DELETE):
+            rsps.add_callback(method, _re.compile(r".*"), callback=self._record_write)
         rsps.add_callback(responses.GET, _rx(r"/host$"), callback=self._wrap(lambda r: [
             {"id": "h1", "name": "host-1", "hostname": "vpn1", "status": "online",
              "public_addr": "198.51.100.1", "local_addr": "10.0.0.10", "uptime": 100}]))
@@ -144,11 +152,17 @@ class FakePritunl:
         org_id = urlsplit(request.url).path.rsplit("/", 1)[-1]
         return USERS.get(org_id, [])
 
-    def put_user(self, request):
-        path = urlsplit(request.url).path
-        body = json.loads(request.body)
-        self.puts.append((path, body))
-        return {"id": path.rsplit("/", 1)[-1], **body}
+    def _find_user(self, request):
+        _, _, org_id, user_id = urlsplit(request.url).path.split("/")[:4]
+        return next(u for u in USERS[org_id] if u["id"] == user_id)
+
+    def _record_write(self, request):
+        self.writes.append((request.method, request.url))
+        return 405, {}, ""
+
+    def single_user(self, request):
+        return {k: v for k, v in self._find_user(request).items() if k != "servers"}
+
 
 
 def _rx(path_regex: str):
@@ -163,12 +177,20 @@ def fake_api(monkeypatch, tmp_path):
     monkeypatch.setenv("PRITUNL_API_TOKEN", TOKEN)
     monkeypatch.setenv("PRITUNL_API_SECRET", SECRET)
     monkeypatch.delenv("PRITUNL_PROFILE", raising=False)
-    monkeypatch.delenv("PRITUNL_READ_ONLY", raising=False)
     monkeypatch.setenv("PRITUNL_GEOIP_AUTODISCOVER", "0")
     monkeypatch.delenv("PRITUNL_GEOIP_CITY", raising=False)
     monkeypatch.delenv("PRITUNL_GEOIP_ASN", raising=False)
-    with responses.RequestsMock(assert_all_requests_are_fired=False) as rsps:
-        yield FakePritunl(rsps)
+    import copy
+
+    saved = copy.deepcopy(USERS)  # some tests mutate fixtures (e.g. watch); isolate them
+    try:
+        with responses.RequestsMock(assert_all_requests_are_fired=False) as rsps:
+            api = FakePritunl(rsps)
+            yield api
+            assert api.writes == [], f"toolbox sent write requests: {api.writes}"
+    finally:
+        USERS.clear()
+        USERS.update(saved)
 
 
 # ----------------------------------------------------------------------------- geo

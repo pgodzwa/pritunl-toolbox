@@ -4,6 +4,9 @@ Pritunl API auth: every request carries Auth-Token, Auth-Timestamp, Auth-Nonce a
 Auth-Signature = base64(HMAC-SHA256(secret, "token&timestamp&nonce&METHOD&path")).
 The server rejects re-used nonces and timestamps outside a small window, so every
 attempt (including retries) is signed freshly.
+
+The toolbox is strictly READ-ONLY towards Pritunl: the transport refuses every HTTP method
+other than GET/HEAD, whatever the configuration, so no code path can change server state.
 """
 
 from __future__ import annotations
@@ -30,7 +33,10 @@ class PritunlAPIError(Exception):
 
 
 class ReadOnlyError(PritunlAPIError):
-    pass
+    """Raised for any attempt to send a non-read request to Pritunl."""
+
+
+READ_METHODS = frozenset({"GET", "HEAD"})
 
 
 def sign_request(token: str, secret: str, method: str, path: str,
@@ -79,12 +85,11 @@ class PritunlClient:
             self._local.session = sess
         return sess
 
-    def request(self, method: str, path: str, *, params: dict | None = None,
-                json_body: Any = None) -> Any:
+    def request(self, method: str, path: str, *, params: dict | None = None) -> Any:
         method = method.upper()
-        if method not in ("GET", "HEAD") and self.profile.read_only:
+        if method not in READ_METHODS:
             raise ReadOnlyError(
-                f"profile '{self.profile.name}' is read_only; refusing {method} {path}"
+                f"pritunl-toolbox is read-only; refusing {method} {path} (only GET/HEAD allowed)"
             )
         full_path = self._base_path + path
         url = self._origin + full_path
@@ -94,11 +99,9 @@ class PritunlClient:
             headers = sign_request(
                 self.profile.api_token, self.profile.api_secret, method, full_path
             )
-            if json_body is not None:
-                headers["Content-Type"] = "application/json"
             try:
                 resp = self.session.request(
-                    method, url, params=params, json=json_body, headers=headers,
+                    method, url, params=params, headers=headers,
                     timeout=self.profile.timeout, allow_redirects=False,
                 )
             except requests.exceptions.SSLError as exc:
@@ -159,12 +162,7 @@ class PritunlClient:
         return self.get(f"/user/{_seg(org_id)}/{_seg(user_id)}")
 
     def user_audit(self, org_id: str, user_id: str) -> list[dict]:
-        return _unwrap(self.get(f"/audit/{_seg(org_id)}/{_seg(user_id)}"), "audit")
-
-    def set_user_disabled(self, org_id: str, user_id: str, disabled: bool) -> dict:
-        return self.request(
-            "PUT", f"/user/{_seg(org_id)}/{_seg(user_id)}", json_body={"disabled": disabled}
-        )
+        return _unwrap(self.get(f"/user/{_seg(org_id)}/{_seg(user_id)}/audit"), "audit")
 
     def servers(self) -> list[dict]:
         return _unwrap(self.get("/server"), "servers")

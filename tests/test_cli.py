@@ -106,20 +106,21 @@ def test_user_show_ambiguous_and_missing(fake_api):
     assert run("user", "show", "nobody").exit_code != 0
 
 
-def test_disable_blocked_on_read_only(fake_api, monkeypatch):
-    monkeypatch.setenv("PRITUNL_READ_ONLY", "true")
-    r = run("user", "disable", "alice", "--yes")
-    assert r.exit_code != 0
-    assert fake_api.puts == []
+def test_no_write_commands_exist(fake_api):
+    for args in (["user", "disable", "alice"], ["user", "enable", "alice"]):
+        r = CliRunner().invoke(cli, args)
+        assert r.exit_code == 2 and "No such command" in r.output
+    assert "read-only" in run("--help").output
+    assert "read-only" in run("config", "show").output
 
 
-def test_disable_requires_confirmation(fake_api):
-    r = run("user", "disable", "alice", input="n\n")
-    assert r.exit_code != 0
-    assert fake_api.puts == []
-    r = run("user", "disable", "alice", "--yes")
-    assert r.exit_code == 0
-    assert fake_api.puts == [("/user/org1/u_alice", {"disabled": True})]
+def test_every_command_is_read_only(fake_api):
+    for args in (["status"], ["orgs"], ["servers"], ["hosts"], ["online"], ["search"],
+                 ["whois", "10.8.0.3"], ["ips"], ["user", "show", "alice", "--audit"],
+                 ["server", "show", "prod"], ["server", "logs", "prod"], ["report"]):
+        run(*args)
+    assert fake_api.writes == []
+    assert {m for m, _ in fake_api.calls} == {"GET"}
 
 
 def test_report_findings(fake_api):
@@ -136,9 +137,12 @@ def test_report_findings(fake_api):
 
 
 def test_server_show_and_logs(fake_api):
+    # live entries carry session ids, not server ids (Pritunl quirk) - must still match
     r = run("server", "show", "prod", "-o", "json")
     data = json.loads(r.output)
     assert {s["user"] for s in data["sessions"]} == {"alice", "carol", "dave"}
+    assert all(s["server_id"] == "srv1" and s["session_id"].startswith("sess-")
+               for s in data["sessions"])
     r = run("server", "logs", "prod-vpn")
     assert "\x1b" not in r.output and "badred" in r.output.replace("[31m", "")
 

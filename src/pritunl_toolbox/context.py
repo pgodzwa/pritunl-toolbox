@@ -58,6 +58,12 @@ class Ctx:
                 self._geo = resolver
         return self._geo
 
+    def reset_geo(self) -> None:
+        """Forget the cached resolver (e.g. after databases were installed)."""
+        if self._geo not in (_UNSET, None):
+            self._geo.close()
+        self._geo = _UNSET
+
     def inventory(self, **kwargs) -> Inventory:
         inv = load_inventory(self.client, **kwargs)
         enrich_users(inv.users, self.geo)

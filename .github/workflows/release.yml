@@ -1,0 +1,85 @@
+name: Release
+
+# Every push to main (normally a merged PR) is tested and, if green, published as a GitHub
+# release vX.Y.Z (first release: v1.0.0). See scripts/release_version.py for the bump rules.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release  # one release at a time, in push order
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # create the tag and the release; nothing else
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # tags + history to compute the next version
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Compute next version
+        id: version
+        run: python scripts/release_version.py >> "$GITHUB_OUTPUT"
+
+      - name: Build wheel and sdist (hash-pinned build tools, no network build isolation)
+        if: steps.version.outputs.release == 'true'
+        env:
+          SETUPTOOLS_SCM_PRETEND_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          python -m pip install --require-hashes -r requirements-dev.txt
+          python -m build --no-isolation --outdir dist .
+          cp requirements.txt dist/requirements.txt
+          cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS
+
+      - name: Smoke-test the built wheel
+        if: steps.version.outputs.release == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          python -m venv /tmp/smoke
+          /tmp/smoke/bin/pip install --require-hashes -r requirements.txt
+          /tmp/smoke/bin/pip install --no-deps dist/*.whl
+          /tmp/smoke/bin/pritunl-toolbox --version | grep -F " $VERSION"
+
+      - name: Create GitHub release
+        if: steps.version.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          PREVIOUS: ${{ steps.version.outputs.previous }}
+        run: |
+          notes_args=(--generate-notes)
+          if [ -n "$PREVIOUS" ]; then notes_args+=(--notes-start-tag "v$PREVIOUS"); fi
+          gh release create "v$VERSION" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "v$VERSION" \
+            --latest \
+            "${notes_args[@]}"
+
+      - name: Summary
+        env:
+          RELEASE: ${{ steps.version.outputs.release }}
+          VERSION: ${{ steps.version.outputs.version }}
+          BUMP: ${{ steps.version.outputs.bump }}
+        run: |
+          if [ "$RELEASE" = "true" ]; then
+            echo "Released v$VERSION ($BUMP)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No release ($BUMP)" >> "$GITHUB_STEP_SUMMARY"
+          fi
