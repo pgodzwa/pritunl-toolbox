@@ -179,16 +179,20 @@ ptb tui
 | **5 Servers** | Server list with online users per server. Select one for connected users and server logs |
 | **6 Report** | Findings by severity, with an allowed-countries input |
 
-**Navigation.** Switching tabs moves the keyboard focus into the tab, so arrow keys work right
-away. Search and Whois start in their input box; everything else starts in the table.
+**Navigation.** Switching tabs always lands on the tab's table, so arrow keys and the next
+`1`–`6` work straight away. To type a query, press `/`, or Enter on an empty table such as
+Search before the first query. Inside a text box, digits are text, so use `Esc` to return to the
+table or `F1`–`F6` to switch tabs directly.
 
 | Key | Action |
 | --- | --- |
 | `1`–`6`, `[` / `]` | Go to a tab / previous or next tab |
+| `F1`–`F6` | Go to a tab from anywhere, even while typing in a box |
 | `↑` `↓` `PgUp` `PgDn` | Move in a table |
 | `Enter` | Open details for the row: a user, a server (who is connected, logs), or a jump (country or platform → filtered Online tab; duplicate IP → Whois) |
 | `/` | Jump to the tab's filter or query box |
 | `Enter` in a box | Apply and go back to the table |
+| `Enter` on an empty table | Jump to the tab's query box |
 | `Esc` or `↓` in a box | Back to the table |
 | `Esc` | Close a dialog (`l` inside one loads the audit log or server logs) |
 | `r` / `a` | Refresh now / toggle auto-refresh |

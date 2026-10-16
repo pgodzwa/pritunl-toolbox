@@ -115,23 +115,43 @@ async def test_tab_keys_move_focus_into_tab(fake_api):
     async with app.run_test(size=SIZE) as pilot:
         await loaded(pilot)
         assert all(not t.can_focus for t in app.query(Tabs))  # not in Tab-key cycle
-        expected = {"2": ("online", "online-table"), "3": ("search", "search-input"),
-                    "4": ("whois", "whois-input"), "5": ("servers", "servers-table"),
-                    "6": ("report", "report-table"), "1": ("dashboard", "dash-servers")}
+        # Regression: 1-6 pressed back to back must work on every tab, including Search and
+        # Whois (they used to put the cursor in their text box, which then ate the digits).
+        expected = {"3": ("search", "search-table"), "4": ("whois", "whois-table"),
+                    "2": ("online", "online-table"), "5": ("servers", "servers-table"),
+                    "6": ("report", "report-table"), "1": ("dashboard", "dash-servers"),
+                    "4 ": ("whois", "whois-table"), "3 ": ("search", "search-table")}
         for key, (tab, widget) in expected.items():
-            await pilot.press(key)
+            await pilot.press(key.strip())
             await pilot.pause()
             assert (active_tab(app), focused_id(app)) == (tab, widget), key
-            if widget.endswith("input"):
-                await pilot.press("escape")  # digits would be typed into the box
-                await pilot.pause()
-                assert focused_id(app) == f"{tab}-table"
         await pilot.press("right_square_bracket")
         await pilot.pause()
-        assert active_tab(app) == "online"
+        assert active_tab(app) == "whois"
         await pilot.press("left_square_bracket", "left_square_bracket")
         await pilot.pause()
-        assert active_tab(app) == "report"
+        assert active_tab(app) == "online"
+
+
+async def test_digits_in_a_box_are_text_but_f_keys_switch(fake_api):
+    app = PritunlTUI(Ctx())
+    async with app.run_test(size=SIZE) as pilot:
+        await loaded(pilot)
+        await pilot.press("4", "slash", *"10.8.0.3")
+        await pilot.pause()
+        assert app.query_one("#whois-input", Input).value == "10.8.0.3"
+        assert active_tab(app) == "whois"  # the digits were typed, not tab switches
+        for key, tab in (("f3", "search"), ("f1", "dashboard"), ("f6", "report")):
+            app.query_one("#whois-input", Input).focus()
+            await pilot.press(key)
+            await pilot.pause()
+            assert active_tab(app) == tab, key
+            assert focused_id(app) == f"{tab}-table" or tab == "dashboard"
+        await pilot.press("escape")  # Esc in a box returns to the table, then 1-6 work
+        await pilot.pause()
+        await pilot.press("2")
+        await pilot.pause()
+        assert active_tab(app) == "online"
 
 
 async def test_filter_box_flow(fake_api):
@@ -161,6 +181,9 @@ async def test_search_and_whois_flow(fake_api):
         await loaded(pilot)
         await pilot.press("3")
         await pilot.pause()
+        assert focused_id(app) == "search-table"
+        await pilot.press("enter")  # Enter on the empty table opens the query box
+        await pilot.pause()
         assert focused_id(app) == "search-input"
         await pilot.press(*"group:dev", "enter")
         await pilot.pause()
@@ -171,8 +194,8 @@ async def test_search_and_whois_flow(fake_api):
 
         await pilot.press("escape", "4")
         await pilot.pause()
-        assert focused_id(app) == "whois-input"
-        await pilot.press(*"10.8.0.3", "enter")
+        assert focused_id(app) == "whois-table"
+        await pilot.press("slash", *"10.8.0.3", "enter")
         await pilot.pause()
         assert len(rows(app, "whois-table")) == 2 and focused_id(app) == "whois-table"
 

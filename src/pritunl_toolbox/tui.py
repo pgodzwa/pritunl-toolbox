@@ -1,8 +1,8 @@
 """Interactive terminal UI (Textual). Strictly read-only towards Pritunl.
 
 Navigation model
-  * 1-6 or [ / ] switch tabs; switching moves focus into the tab (its table, or its input
-    when there is nothing to show yet), so arrow keys work immediately.
+  * 1-6 or [ / ] switch tabs; switching always lands on the tab's table, so the next 1-6 works
+    too. F1-F6 switch tabs from anywhere, even while typing in a box (where 1-6 are text).
   * Tables: Up/Down to move, Enter for details. Dialogs close with Esc.
   * / jumps to the tab's filter/query box. In a box, Enter applies and returns to the table,
     Esc or Down returns to the table without typing more.
@@ -138,6 +138,14 @@ class Grid(DataTable):
     def __init__(self, **kwargs: Any):
         super().__init__(cursor_type="row", zebra_stripes=True, **kwargs)
 
+    def action_select_cursor(self) -> None:
+        # Enter on an empty main-screen table (e.g. Search before the first query) jumps to the
+        # tab's query box, so starting a search stays a single key.
+        if self.row_count == 0 and self.screen is self.app.screen_stack[0]:
+            self.app.action_focus_filter()  # type: ignore[attr-defined]
+            return
+        super().action_select_cursor()
+
 
 class FilterInput(Input):
     """Query box: Esc / Down hand focus back to the tab's table."""
@@ -153,10 +161,11 @@ class FilterInput(Input):
 
 HELP_TEXT = """\
 Navigation
-  1-6, [ ]        switch tab (focus moves into the tab)
+  1-6, [ ]        switch tab (lands on the tab's table)
+  F1-F6           switch tab from anywhere, even while typing in a box
   Up/Down, PgUp   move in a table          Enter   open details
   /               jump to the filter/query box of the tab
-  Enter in a box  apply and go back to the table
+  Enter in a box  apply and go back to the table (Enter on an empty table: go to the box)
   Esc             leave a box / close a dialog
   Tab             next control in the current tab
 
@@ -551,12 +560,15 @@ class PritunlTUI(App[None]):
     .buttons Button { margin-left: 1; }
     """
     BINDINGS = [
-        Binding("1", "show_tab('dashboard')", "Tabs", key_display="1-6"),
+        Binding("1", "show_tab('dashboard')", "Tabs", key_display="1-6/F1-F6"),
         Binding("2", "show_tab('online')", "Online", show=False),
         Binding("3", "show_tab('search')", "Search", show=False),
         Binding("4", "show_tab('whois')", "Whois", show=False),
         Binding("5", "show_tab('servers')", "Servers", show=False),
         Binding("6", "show_tab('report')", "Report", show=False),
+        # F-keys are priority bindings: they switch tabs even while a text box has focus.
+        *(Binding(f"f{i}", f"show_tab('{tab}')", tab.capitalize(), show=False, priority=True)
+          for i, tab in enumerate(TAB_ORDER, start=1)),
         Binding("left_square_bracket", "prev_tab", "Previous tab", show=False),
         Binding("right_square_bracket", "next_tab", "Next tab", show=False),
         Binding("slash", "focus_filter", "Filter"),
@@ -573,8 +585,6 @@ class PritunlTUI(App[None]):
                   "servers": "servers-table", "report": "report-table"}
     TAB_INPUTS = {"online": "online-filter", "search": "search-input",
                   "whois": "whois-input", "report": "report-countries"}
-    # Tabs that start empty until something is typed: focus their input first.
-    INPUT_FIRST = {"search", "whois"}
 
     def __init__(self, ctx: Ctx, refresh_seconds: int = 30):
         super().__init__()
@@ -613,15 +623,15 @@ class PritunlTUI(App[None]):
                                       id="search-input")
                     yield Label(Text("per server"))
                     yield Switch(value=False, id="search-expand")
-                yield Static(Text("Type a query and press Enter (empty = everyone)."),
-                             id="search-status", classes="status")
+                yield Static(Text("Press / or Enter to type a query, Enter to run it "
+                                  "(empty = everyone)."), id="search-status", classes="status")
                 yield Grid(id="search-table")
             with TabPane("4 Whois", id="whois"):
                 with Horizontal(classes="bar"):
                     yield FilterInput(placeholder="IP addresses or CIDRs, space separated, "
                                                   "then Enter", id="whois-input")
-                yield Static(Text("Who owns or uses an address (VPN or real IP)."),
-                             id="whois-status", classes="status")
+                yield Static(Text("Who owns or uses an address (VPN or real IP). Press / or Enter "
+                                  "to type IPs."), id="whois-status", classes="status")
                 yield Grid(id="whois-table")
             with TabPane("5 Servers", id="servers"):
                 yield Static(Text("Enter on a server shows who is connected."),
@@ -921,11 +931,8 @@ class PritunlTUI(App[None]):
         # Never steal focus the user already moved inside this tab (e.g. '6' then '/').
         if not force and self._focus_in_active_tab():
             return
-        tab = self.query_one(TabbedContent).active
-        if tab in self.INPUT_FIRST and f"{tab}-table" not in self.tables:
-            self.query_one(f"#{self.TAB_INPUTS[tab]}", Input).focus()
-        else:
-            self.action_focus_table()
+        # Always land on the table: digits typed into a box would not switch tabs any more.
+        self.action_focus_table()
 
     @on(Input.Changed, "#online-filter")
     @on(Select.Changed, "#online-server")
