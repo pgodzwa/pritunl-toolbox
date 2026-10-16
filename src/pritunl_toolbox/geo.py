@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 pritunl-toolbox contributors
 """Offline GeoIP / ASN enrichment from local MaxMind-format (.mmdb) databases.
 
 Privacy by design: lookups never leave this machine. No IP address is sent to any online

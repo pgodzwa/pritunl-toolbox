@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 pritunl-toolbox contributors
 """Shared runtime context for the CLI and the TUI: profile, API client, GeoIP resolver."""
 
 from __future__ import annotations

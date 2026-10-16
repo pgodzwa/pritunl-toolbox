@@ -361,6 +361,25 @@ title. Words elsewhere in a description do not count.
 
 The first release is `v1.0.0`.
 
+## License
+
+pritunl-toolbox is free software, licensed under the
+[GNU General Public License v3.0 or later](LICENSE) (`GPL-3.0-or-later`).
+
+- **You may** use it for any purpose, including commercially and inside a company, and you may
+  study, change and share it.
+- **If you distribute** it, modified or not, you must pass the same freedoms on: provide the
+  source under GPL-3.0-or-later and keep the license and copyright notices.
+- **There is no warranty**; see the license for details.
+
+All runtime dependencies use GPL-3.0-compatible licenses (MIT, BSD, Apache-2.0, MPL-2.0,
+PSF-2.0). The toolbox contains no Pritunl code and only talks to Pritunl's HTTP API; your use of
+your Pritunl server stays under Pritunl's own license.
+
+GeoIP databases are not part of this project. You download them yourself, under their own terms:
+MaxMind GeoLite2 under the GeoLite2 End User License Agreement, and DB-IP lite under CC BY 4.0.
+Both require attribution if you publish data derived from them.
+
 ## Roadmap ideas
 
 - Session history: persist `online --watch` events to SQLite and answer "who had 10.8.0.15 last

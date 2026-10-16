@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 pritunl-toolbox contributors
 """Rendering helpers: rich tables, JSON and CSV.
 
 Many displayed values are controlled by end users or their VPN clients (user names, device names,

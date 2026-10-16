@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 pritunl-toolbox contributors
 """Compute the next release version from git tags and commit messages.
 
 Used by .github/workflows/release.yml on every push to main.

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 pritunl-toolbox contributors
 """Profile/credential handling.
 
 Resolution order for every setting (highest wins):

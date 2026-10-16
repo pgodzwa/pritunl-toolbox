@@ -8,6 +8,8 @@ name = "pritunl-toolbox"
 dynamic = ["version"]
 description = "Read-only CLI and terminal UI for Pritunl VPN: who is connected, who owns an IP, search, GeoIP and audits."
 readme = "README.md"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 classifiers = [
     "Environment :: Console",
